@@ -1,0 +1,16 @@
+fastapi[standard]
+uvicorn
+sqlalchemy
+pydantic[email]
+passlib[argon2]
+python-jose
+python-dotenv
+psycopg2-binary
+aiosqlite
+opencv-python
+numpy
+pillow
+pyzxing
+websockets
+python-multipart
+cryptography
