@@ -40,9 +40,25 @@ class BusinessUpdate(BaseModel):
     ifsc_code: Optional[str] = Field(None, max_length=20)
     upi_id: Optional[str] = Field(None, max_length=100)
 
-class BusinessResponse(BusinessBase):
+class BusinessResponse(BaseModel):
     id: int
     business_id: str  # Auto-generated unique business ID
+    business_name: str
+    business_type: Optional[str] = None
+    category: Optional[str] = None
+    owner_name: str
+    phone_number: str
+    email: str
+    gst_number: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    country: Optional[str] = None
+    invoice_prefix: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    upi_id: Optional[str] = None
     has_logo: Optional[bool] = False  # Indicate if logo exists
     
     class Config:

@@ -53,26 +53,24 @@ async def create_business(
                 detail="Email is required and cannot be empty."
             )
         
-        # Check if business details already exist (only one business allowed)
-        existing = db.query(Business).first()
+        # Check if business details already exist for this user's business_id
+        user_business_id = str(current_user.business_id)
+        existing = db.query(Business).filter(Business.business_id == user_business_id).first()
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Business details already exist. You can only have one business. Please update the existing business instead of creating a new one."
+                detail="Business details already exist for your account. Please update the existing business instead of creating a new one."
             )
         
-        logger.info(f"Owner {current_user.name} ({current_user.email}) is creating business details")
+        logger.info(f"Owner {current_user.name} ({current_user.email}) is creating business details for business_id: {user_business_id}")
         
-        # Generate unique business_id
-        business_id = generate_business_id(db)
-        
-        # Create business with generated business_id
-        db_business = Business(**business_data.dict(), business_id=business_id)
+        # Create business with user's business_id
+        db_business = Business(**business_data.dict(), business_id=user_business_id)
         db.add(db_business)
         db.commit()
         db.refresh(db_business)
         
-        logger.info(f"Business created successfully: {db_business.business_name} (ID: {business_id})")
+        logger.info(f"Business created successfully: {db_business.business_name} (ID: {user_business_id})")
         return db_business
     
     except HTTPException:
@@ -118,15 +116,20 @@ async def get_business(
     db: Session = Depends(get_db),
     current_user: Employee = Depends(get_current_employee)
 ):
-    """Get business details - all authenticated users can view"""
+    """Get business details - all authenticated users can view their business"""
     try:
-        business = db.query(Business).first()
+        logger.info(f"Fetching business for user: {current_user.name}, emp_id: {current_user.emp_id}, business_id: {current_user.business_id}")
+        user_business_id = str(current_user.business_id)
+        logger.info(f"Looking for business with business_id: {user_business_id}")
+        business = db.query(Business).filter(Business.business_id == user_business_id).first()
         if not business:
+            logger.warning(f"No business found for business_id: {user_business_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No business details found. Please create your business profile first to get started."
+                detail="No business details found for your account. Please create your business profile first to get started."
             )
         
+        logger.info(f"Found business: {business.business_name} (ID: {business.business_id})")
         # Create response with has_logo indicator
         response_data = BusinessResponse.from_orm(business)
         response_data.has_logo = business.logo_data is not None
@@ -135,7 +138,7 @@ async def get_business(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error fetching business: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error fetching business for user {current_user.emp_id if current_user else 'unknown'}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An error occurred while loading business details. Please refresh the page or contact support."
@@ -147,13 +150,14 @@ async def update_business(
     db: Session = Depends(get_db),
     current_user: Employee = Depends(require_role(["owner", "admin"]))
 ):
-    """Update business details - owner and admin can update"""
+    """Update business details - owner and admin can update their business"""
     try:
-        business = db.query(Business).first()
+        user_business_id = str(current_user.business_id)
+        business = db.query(Business).filter(Business.business_id == user_business_id).first()
         if not business:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No business found to update. Please create business details first."
+                detail="No business found for your account. Please create business details first."
             )
         
         logger.info(f"User {current_user.name} ({current_user.email}) is updating business details")
@@ -265,12 +269,13 @@ async def upload_logo(
                 detail=f"File size ({file_size_mb:.2f} MB) exceeds the maximum limit of 5 MB. Please compress the image or choose a smaller file."
             )
         
-        # Get business record
-        business = db.query(Business).first()
+        # Get business record for current user
+        user_business_id = str(current_user.business_id)
+        business = db.query(Business).filter(Business.business_id == user_business_id).first()
         if not business:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No business found. Please create business details before uploading a logo."
+                detail="No business found for your account. Please create business details before uploading a logo."
             )
         
         logger.info(f"User {current_user.name} is uploading logo for business: {business.business_name} (Size: {file_size_mb:.2f} MB)")
@@ -295,15 +300,17 @@ async def upload_logo(
 
 @router.get("/logo")
 async def get_logo(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_employee)
 ):
-    """Get business logo - public access (no authentication required)"""
+    """Get business logo - authenticated users can view their business logo"""
     try:
-        business = db.query(Business).first()
+        user_business_id = str(current_user.business_id)
+        business = db.query(Business).filter(Business.business_id == user_business_id).first()
         if not business:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No business found."
+                detail="No business found for your account."
             )
         
         if not business.logo_data:

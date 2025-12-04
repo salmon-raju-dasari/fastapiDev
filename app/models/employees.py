@@ -13,7 +13,18 @@ class Employee(Base):
         index=True,
         server_default=emp_id_seq.next_value()
     )
-    name = Column(String(100), unique=True, index=True, nullable=False)
+    
+    # Create a sequence that starts from 20000 for business_id
+    business_id_seq = Sequence('employee_business_id_seq', start=20000, increment=1)
+    business_id = Column(
+        Integer,
+        business_id_seq,
+        nullable=False,
+        index=True,
+        server_default=business_id_seq.next_value()
+    )
+    
+    name = Column(String(100), index=True, nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
     phone_number = Column(String(20), nullable=False)
     aadhar_number = Column(String(12), nullable=True)

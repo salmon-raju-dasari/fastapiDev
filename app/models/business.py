@@ -5,7 +5,7 @@ class Business(Base):
     __tablename__ = "business"
     
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    business_id = Column(String(36), unique=True, nullable=False, index=True)  # UUID format (36 chars)
+    business_id = Column(String(50), unique=True, nullable=False, index=True)  # Stores employee business_id as string
     business_name = Column(String(200), nullable=False)
     business_type = Column(String(100), nullable=True)
     category = Column(String(100), nullable=True)

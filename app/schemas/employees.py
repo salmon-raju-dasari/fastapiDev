@@ -2,13 +2,13 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Dict, Any
 
 class EmployeeLogin(BaseModel):
-    email: EmailStr = Field(..., description="Employee email address")
+    user_id: str = Field(..., description="Employee user ID (format: USR1000)")
     password: str = Field(..., description="Employee password")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "email": "employee@example.com",
+                "user_id": "USR1000",
                 "password": "myPassword123"
             }
         }
@@ -67,12 +67,20 @@ class EmployeeUpdate(BaseModel):
 
 class Employee(EmployeeBase):
     emp_id: int
+    business_id: Optional[int] = None
+    user_id: Optional[str] = None
     store_id: Optional[str] = None
     created_by: Optional[int] = None
     updated_by: Optional[int] = None
     
     class Config:
         from_attributes = True
+    
+    @classmethod
+    def from_orm(cls, obj):
+        instance = super().from_orm(obj)
+        instance.user_id = f"USR{obj.emp_id}"
+        return instance
 
 class TokenWithRefresh(BaseModel):
     access_token: str
@@ -87,4 +95,43 @@ class EmployeePaginatedResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+class OwnerRegistration(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="Owner name (required)")
+    email: EmailStr = Field(..., description="Owner email address (required)")
+    phone_number: str = Field(..., min_length=1, max_length=20, description="Phone number (required)")
+    password: str = Field(..., min_length=8, description="Password (minimum 8 characters)")
+    confirm_password: str = Field(..., min_length=8, description="Confirm password (minimum 8 characters)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "John Owner",
+                "email": "owner@example.com",
+                "phone_number": "1234567890",
+                "password": "securePassword123",
+                "confirm_password": "securePassword123"
+            }
+        }
+
+class ForgotPasswordRequest(BaseModel):
+    user_id: str = Field(..., description="User ID (format: USR1000)")
+    email: EmailStr = Field(..., description="Registered email address")
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., description="Password reset token")
+    user_id: str = Field(..., description="User ID")
+    new_password: str = Field(..., min_length=8, description="New password (minimum 8 characters)")
+    confirm_password: str = Field(..., min_length=8, description="Confirm new password")
+
+class ForgotUsernameRequest(BaseModel):
+    email: EmailStr = Field(..., description="Registered email address")
+
+class VerifyOTPRequest(BaseModel):
+    email: EmailStr = Field(..., description="Email address")
+    otp: str = Field(..., min_length=6, max_length=6, description="6-digit OTP")
+
+class ForgotPasswordOTPRequest(BaseModel):
+    email: EmailStr = Field(..., description="Registered email address")
+
 

@@ -85,7 +85,7 @@ async def get_stores(
 ):
     """Get all stores - all authenticated users can view"""
     try:
-        stores = db.query(Store).all()
+        stores = db.query(Store).filter(Store.business_id == str(current_user.business_id)).all()
         return stores
     except Exception as e:
         logger.error(f"Error fetching stores: {str(e)}", exc_info=True)
@@ -102,7 +102,10 @@ async def get_store(
 ):
     """Get a specific store by ID"""
     try:
-        store = db.query(Store).filter(Store.store_id == store_id).first()
+        store = db.query(Store).filter(
+            Store.store_id == store_id,
+            Store.business_id == str(current_user.business_id)
+        ).first()
         if not store:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -127,7 +130,10 @@ async def update_store(
 ):
     """Update store details - owner and admin can update"""
     try:
-        store = db.query(Store).filter(Store.store_id == store_id).first()
+        store = db.query(Store).filter(
+            Store.store_id == store_id,
+            Store.business_id == str(current_user.business_id)
+        ).first()
         if not store:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -186,7 +192,10 @@ async def delete_store(
 ):
     """Delete a store - only owner and admin can delete"""
     try:
-        store = db.query(Store).filter(Store.store_id == store_id).first()
+        store = db.query(Store).filter(
+            Store.store_id == store_id,
+            Store.business_id == str(current_user.business_id)
+        ).first()
         if not store:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
