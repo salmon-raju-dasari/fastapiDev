@@ -7,6 +7,8 @@ from app.database import Base, engine
 # import models so they are registered on the metadata
 # import app.models.user  # noqa: F401  # Commented out - using employees table now
 import app.models.employees  # noqa: F401
+import app.models.employee_labels  # noqa: F401
+import app.models.custom_labels  # noqa: F401
 import app.models.products  # noqa: F401
 import app.models.categories  # noqa: F401
 import app.models.business  # noqa: F401
@@ -20,6 +22,7 @@ from app.routes.categories import router as categories_router
 from app.routes.business import router as business_router
 from app.routes.stores import router as stores_router
 from app.routes.payment import router as payment_router
+from app.routes.custom_labels import router as custom_labels_router
 
 app = FastAPI()
 
@@ -42,6 +45,7 @@ app.include_router(categories_router, prefix="/api/categories", tags=["categorie
 app.include_router(business_router, prefix="/api/business", tags=["business"])
 app.include_router(stores_router, prefix="/api/stores", tags=["stores"])
 app.include_router(payment_router, prefix="/api/payment", tags=["payment"])
+app.include_router(custom_labels_router, prefix="/api", tags=["custom-labels"])
 
 @app.get("/")
 def read_root():

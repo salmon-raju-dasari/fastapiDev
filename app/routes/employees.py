@@ -4,6 +4,7 @@ from typing import List
 import logging
 from app.database import get_db
 from app.models.employees import Employee
+from app.models.employee_labels import EmployeeLabel
 from app.models.business import Business
 from app.schemas.employees import (
     EmployeeCreate, 
@@ -46,13 +47,8 @@ async def register_owner(
 ):
     """Public endpoint to register an owner of the business"""
     try:
-        # Check if email already exists
-        existing_employee = db.query(Employee).filter(Employee.email == owner_data.email).first()
-        if existing_employee:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email address is already registered. Please use a different email or use the forgot password option."
-            )
+        # Note: Same email can now register multiple businesses (owner in Business A, owner in Business B)
+        # No email uniqueness check needed - composite constraint (email, business_id) allows this
         
         # Validate password match
         if owner_data.password != owner_data.confirm_password:
@@ -108,6 +104,7 @@ async def register_owner(
                 user_name=owner_data.name,
                 user_id=user_id,
                 role="owner",
+                business_id=db_owner.business_id,
                 password=owner_data.password  # Send the password they just created
             )
             if email_sent:
@@ -153,12 +150,15 @@ async def register_employee(
 ):
     """Register a new employee - requires owner or admin role"""
     try:
-        # Check if email already exists
-        existing_employee = db.query(Employee).filter(Employee.email == employee.email).first()
+        # Check if email already exists in the SAME business
+        existing_employee = db.query(Employee).filter(
+            Employee.email == employee.email,
+            Employee.business_id == current_employee.business_id
+        ).first()
         if existing_employee:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email address is already registered. Please use a different email."
+                detail="This email is already registered in your business. Please use a different email."
             )
         
         # Hash password
@@ -234,13 +234,8 @@ async def create_employee(
 ):
     """Create a new employee - requires owner, admin, or manager role"""
     try:
-        # Check if email already exists
-        db_employee = db.query(Employee).filter(Employee.email == employee.email).first()
-        if db_employee:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
+        # Note: Same email can be used multiple times within a business
+        # Database has no unique constraint on email anymore
         
         # Hash password
         try:
@@ -266,7 +261,7 @@ async def create_employee(
             country=employee.country,
             role=employee.role,
             joining_date=employee.joining_date,
-            custom_fields=employee.custom_fields,
+            custom_fields=None,  # Don't store in JSON, use employee_labels table
             hashed_password=hashed_password,
             business_id=current_employee.business_id,  # Use the same business_id as the creator
             created_by=current_employee.emp_id
@@ -275,6 +270,25 @@ async def create_employee(
         db.add(db_employee)
         db.commit()
         db.refresh(db_employee)
+        
+        # Save custom labels to employee_labels table
+        logging.info(f"Custom fields data received: {employee.custom_fields}")
+        if employee.custom_fields:
+            logging.info(f"Saving {len(employee.custom_fields)} custom field(s) to employee_labels table")
+            for field_obj in employee.custom_fields:
+                for label_name, label_value in field_obj.items():
+                    logging.info(f"Saving label: {label_name} = {label_value}")
+                    label = EmployeeLabel(
+                        emp_id=db_employee.emp_id,
+                        business_id=db_employee.business_id,
+                        label_name=label_name,
+                        label_value=label_value
+                    )
+                    db.add(label)
+            db.commit()
+            logging.info(f"Successfully saved custom fields to employee_labels table")
+        else:
+            logging.info("No custom fields to save")
         
         # No need to create a Business record - employee shares the owner's business
         # Business record already exists from owner registration
@@ -287,6 +301,7 @@ async def create_employee(
                 user_name=employee.name,
                 user_id=user_id,
                 role=employee.role,
+                business_id=db_employee.business_id,
                 password=employee.password  # Send the password
             )
             logging.info(f"Registration email sent to {employee.email}")
@@ -334,25 +349,17 @@ def get_employees(
     if filter_field and filter_value:
         filter_value_lower = filter_value.lower()
         
-        # Handle custom fields filtering
+        # Handle custom fields filtering using employee_labels table
         if filter_field.startswith("custom_"):
             custom_field_name = filter_field.replace("custom_", "")
-            # Filter employees with custom fields that match
-            # We need to check if any element in the JSON array has the key and contains the value
-            from sqlalchemy import cast, String, func
+            # Query employee_labels table for matching labels
+            matching_labels = db.query(EmployeeLabel.emp_id).filter(
+                EmployeeLabel.business_id == current_employee.business_id,
+                EmployeeLabel.label_name == custom_field_name,
+                EmployeeLabel.label_value.ilike(f"%{filter_value}%")
+            ).distinct().all()
             
-            # Get all employees and filter in Python (more reliable for JSON filtering)
-            all_employees = query.all()
-            matching_ids = []
-            
-            for emp in all_employees:
-                if emp.custom_fields:
-                    for field_obj in emp.custom_fields:
-                        if custom_field_name in field_obj:
-                            field_value = str(field_obj[custom_field_name]).lower()
-                            if filter_value_lower in field_value:
-                                matching_ids.append(emp.emp_id)
-                                break
+            matching_ids = [label.emp_id for label in matching_labels]
             
             if matching_ids:
                 query = query.filter(Employee.emp_id.in_(matching_ids))
@@ -404,16 +411,125 @@ def get_custom_field_labels(
     db: Session = Depends(get_db),
     current_employee: Employee = Depends(require_role(["owner", "admin", "manager"]))
 ):
-    """Get all unique custom field label names - requires owner, admin, or manager role"""
-    employees = db.query(Employee).filter(Employee.business_id == current_employee.business_id).all()
-    custom_labels = set()
+    """Get all unique custom field label names from employee_labels table"""
+    labels = db.query(EmployeeLabel.label_name).filter(
+        EmployeeLabel.business_id == current_employee.business_id
+    ).distinct().all()
     
-    for employee in employees:
-        if employee.custom_fields:
-            for field_obj in employee.custom_fields:
-                custom_labels.update(field_obj.keys())
+    return sorted([label[0] for label in labels])
+
+
+@router.get("/custom-fields/values/{label_name}", response_model=List[str])
+def get_label_values(
+    label_name: str,
+    db: Session = Depends(get_db),
+    current_employee: Employee = Depends(require_role(["owner", "admin", "manager"]))
+):
+    """
+    Get all unique values for a specific label name.
+    Returns values from both template (label_values array) and employee records (label_value).
+    """
+    # Get template values (stored as array in label_values column where emp_id is NULL)
+    template_record = db.query(EmployeeLabel).filter(
+        EmployeeLabel.business_id == current_employee.business_id,
+        EmployeeLabel.label_name == label_name,
+        EmployeeLabel.emp_id == None
+    ).first()
     
-    return sorted(list(custom_labels))
+    template_values = template_record.label_values if template_record and template_record.label_values else []
+    
+    # Get values from actual employee records (label_value column where emp_id is NOT NULL)
+    employee_values = db.query(EmployeeLabel.label_value).filter(
+        EmployeeLabel.business_id == current_employee.business_id,
+        EmployeeLabel.label_name == label_name,
+        EmployeeLabel.emp_id != None,
+        EmployeeLabel.label_value != None
+    ).distinct().all()
+    
+    employee_values = [value[0] for value in employee_values]
+    
+    # Combine and deduplicate
+    all_values = list(set(template_values + employee_values))
+    
+    return sorted(all_values)
+
+
+@router.post("/custom-fields/define-label", status_code=status.HTTP_201_CREATED)
+def define_custom_label(
+    label_data: dict,
+    db: Session = Depends(get_db),
+    current_employee: Employee = Depends(require_role(["owner", "admin", "manager"]))
+):
+    """
+    Define a custom label with predefined values.
+    Stores values as an array in a single row with emp_id=NULL (template record).
+    
+    Request body: {"label_name": "Size", "values": ["XL", "L", "M", "S"]}
+    """
+    label_name = label_data.get("label_name", "").strip()
+    values = label_data.get("values", [])
+    
+    if not label_name:
+        raise HTTPException(status_code=400, detail="label_name is required")
+    
+    if not values or not isinstance(values, list):
+        raise HTTPException(status_code=400, detail="values must be a non-empty array")
+    
+    # Filter out empty values and deduplicate
+    valid_values = list(set([v.strip() for v in values if isinstance(v, str) and v.strip()]))
+    
+    if not valid_values:
+        raise HTTPException(status_code=400, detail="At least one valid value is required")
+    
+    try:
+        # Check if template already exists for this label
+        existing_template = db.query(EmployeeLabel).filter(
+            EmployeeLabel.business_id == current_employee.business_id,
+            EmployeeLabel.label_name == label_name,
+            EmployeeLabel.emp_id == None
+        ).first()
+        
+        if existing_template:
+            # Merge new values with existing values
+            current_values = existing_template.label_values or []
+            merged_values = list(set(current_values + valid_values))
+            existing_template.label_values = merged_values
+            new_count = len(merged_values) - len(current_values)
+            
+            db.commit()
+            
+            logging.info(f"Updated custom label '{label_name}' with {new_count} new value(s) for business {current_employee.business_id}")
+            
+            return {
+                "message": f"Custom label '{label_name}' updated successfully",
+                "label_name": label_name,
+                "new_values_added": new_count,
+                "total_values": len(merged_values)
+            }
+        else:
+            # Create new template record with array of values
+            template_label = EmployeeLabel(
+                emp_id=None,  # NULL emp_id indicates this is a template
+                business_id=current_employee.business_id,
+                label_name=label_name,
+                label_value=None,  # Not used for templates
+                label_values=valid_values  # Store array of values
+            )
+            db.add(template_label)
+            db.commit()
+            
+            logging.info(f"Created custom label '{label_name}' with {len(valid_values)} value(s) for business {current_employee.business_id}")
+            
+            return {
+                "message": f"Custom label '{label_name}' created successfully",
+                "label_name": label_name,
+                "total_values": len(valid_values)
+            }
+        
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Error defining custom label: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save custom label: {str(e)}")
 
 
 @router.get("/{emp_id}", response_model=EmployeeSchema)
@@ -454,11 +570,14 @@ def update_employee(
             detail="You can only update your own profile"
         )
     
-    # Check if email is being changed and if it's already taken
+    # Check if email is being changed and if it's already taken in the same business
     if employee_update.email and employee_update.email != db_employee.email:
-        email_exists = db.query(Employee).filter(Employee.email == employee_update.email).first()
+        email_exists = db.query(Employee).filter(
+            Employee.email == employee_update.email,
+            Employee.business_id == current_employee.business_id
+        ).first()
         if email_exists:
-            raise HTTPException(status_code=400, detail="Email already registered")
+            raise HTTPException(status_code=400, detail="Email already registered in your business")
     
     # Update employee fields
     update_data = employee_update.model_dump(exclude_unset=True)
@@ -467,10 +586,43 @@ def update_employee(
     if "password" in update_data and update_data["password"]:
         update_data["hashed_password"] = pwd_context.hash(update_data.pop("password"))
     
+    # Handle custom_fields separately
+    custom_fields_data = update_data.pop("custom_fields", None)
+    
     for field, value in update_data.items():
         setattr(db_employee, field, value)
     
     db.commit()
+    
+    # Update custom labels in employee_labels table
+    logging.info(f"Custom fields data received for update: {custom_fields_data}")
+    if custom_fields_data is not None:
+        # Delete existing labels for this employee
+        deleted_count = db.query(EmployeeLabel).filter(
+            EmployeeLabel.emp_id == emp_id
+        ).delete()
+        logging.info(f"Deleted {deleted_count} existing label(s) for employee {emp_id}")
+        
+        # Add new labels
+        if custom_fields_data:
+            logging.info(f"Saving {len(custom_fields_data)} custom field(s) to employee_labels table")
+            for field_obj in custom_fields_data:
+                for label_name, label_value in field_obj.items():
+                    logging.info(f"Saving label: {label_name} = {label_value}")
+                    label = EmployeeLabel(
+                        emp_id=emp_id,
+                        business_id=db_employee.business_id,
+                        label_name=label_name,
+                        label_value=label_value
+                    )
+                    db.add(label)
+            logging.info(f"Successfully saved custom fields to employee_labels table")
+        else:
+            logging.info("No custom fields to save (custom_fields is empty)")
+        db.commit()
+    else:
+        logging.info("Custom fields not included in update request")
+    
     db.refresh(db_employee)
     return db_employee
 
@@ -488,6 +640,19 @@ def delete_employee(
     ).first()
     if db_employee is None:
         raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Check if employee is an owner with associated business
+    if db_employee.role == "owner":
+        # Check if this owner has a business registered
+        associated_business = db.query(Business).filter(
+            Business.business_id == str(db_employee.business_id)
+        ).first()
+        
+        if associated_business:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete owner with associated business. Business and its employees must be removed first."
+            )
 
     db.delete(db_employee)
     db.commit()
@@ -700,40 +865,49 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
 @router.post("/forgot-username-otp")
 async def forgot_username_otp(request: ForgotUsernameRequest, db: Session = Depends(get_db)):
     """
-    Send OTP to email for username recovery
+    Send all user IDs (usernames) associated with an email
+    Since same email can exist in multiple businesses, returns all matches
+    If business_id is provided, only returns User ID for that specific business
     """
     try:
-        # Find employee by email
-        employee = db.query(Employee).filter(Employee.email == request.email).first()
+        # Build query based on whether business_id is provided
+        query = db.query(Employee).filter(Employee.email == request.email)
         
-        if not employee:
+        # If business_id provided, filter by it
+        if request.business_id:
+            query = query.filter(Employee.business_id == request.business_id)
+        
+        employees = query.all()
+        
+        if not employees:
             # Don't reveal if email exists for security
-            return {"message": "If the email is registered, an OTP will be sent."}
+            return {"message": "If the email is registered, your user IDs will be sent."}
         
-        # Generate and store OTP
-        otp = store_otp(
-            email=request.email,
-            user_id=f"USR{employee.emp_id}",
-            purpose="forgot_username"
-        )
+        # Prepare list of user IDs with business info
+        user_ids = []
+        for emp in employees:
+            user_ids.append({
+                "user_id": f"USR{emp.emp_id}",
+                "role": emp.role,
+                "business_id": emp.business_id
+            })
         
-        # Send OTP email
+        # Send email with all user IDs
         try:
-            send_otp_email(
-                to_email=employee.email,
-                user_name=employee.name,
-                otp=otp,
-                purpose="recover your username"
+            send_credentials_email(
+                to_email=request.email,
+                user_name=employees[0].name,  # Use first name (should be same person)
+                user_ids=user_ids
             )
-            logging.info(f"Username recovery OTP sent to {employee.email}")
+            logging.info(f"Username recovery sent to {request.email} with {len(user_ids)} user ID(s)")
         except Exception as e:
-            logging.error(f"Failed to send OTP email: {str(e)}")
+            logging.error(f"Failed to send credentials email: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send OTP email. Please try again later."
+                detail="Failed to send email. Please try again later."
             )
         
-        return {"message": "If the email is registered, an OTP will be sent."}
+        return {"message": "If the email is registered, your user IDs will be sent."}
     
     except HTTPException:
         raise
@@ -749,13 +923,34 @@ async def forgot_username_otp(request: ForgotUsernameRequest, db: Session = Depe
 async def forgot_password_otp(request: ForgotPasswordOTPRequest, db: Session = Depends(get_db)):
     """
     Send OTP to email for password recovery
+    Requires BOTH user_id and email since same email can exist in multiple businesses
     """
     try:
-        # Find employee by email
-        employee = db.query(Employee).filter(Employee.email == request.email).first()
+        # Parse user_id to get emp_id
+        if not request.user_id or not request.user_id.startswith("USR"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user ID format. Please provide user ID in format USR1000"
+            )
+        
+        emp_id_str = request.user_id[3:]
+        try:
+            emp_id = int(emp_id_str)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user ID format"
+            )
+        
+        # Find employee by BOTH emp_id and email
+        employee = db.query(Employee).filter(
+            Employee.emp_id == emp_id,
+            Employee.email == request.email
+        ).first()
         
         if not employee:
-            # Don't reveal if email exists for security
+            # Don't reveal if email/user_id combination exists for security
+            return {"message": "If the user ID and email match, an OTP will be sent."}
             return {"message": "If the email is registered, an OTP will be sent."}
         
         # Generate and store OTP

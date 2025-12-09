@@ -69,7 +69,7 @@ def send_email(to_email: str, subject: str, html_content: str, text_content: Opt
         return False
 
 
-def send_registration_email(to_email: str, user_name: str, user_id: str, role: str, password: str = None) -> bool:
+def send_registration_email(to_email: str, user_name: str, user_id: str, role: str, business_id: int = None, password: str = None) -> bool:
     """
     Send registration confirmation email with login credentials
     
@@ -78,6 +78,7 @@ def send_registration_email(to_email: str, user_name: str, user_id: str, role: s
         user_name: Name of the registered user
         user_id: User ID for login
         role: User role (owner, admin, employee, etc.)
+        business_id: Business ID (optional)
         password: Plain text password (optional, only sent when creating account for user)
     
     Returns:
@@ -101,6 +102,7 @@ def send_registration_email(to_email: str, user_name: str, user_id: str, role: s
                 <p>Your account has been successfully created. Here are your login credentials:</p>
                 <div style="background-color: #f5f5f5; padding: 15px; border-left: 4px solid #4CAF50; margin: 20px 0;">
                     <p><strong>User ID:</strong> {user_id}</p>
+                    <p><strong>Business ID:</strong> {business_id}</p>
                     <p><strong>Role:</strong> {role.title()}</p>
                     <p><strong>Email:</strong> {to_email}</p>
                     {password_section}
@@ -206,14 +208,16 @@ def send_otp_email(to_email: str, user_name: str, otp: str, purpose: str) -> boo
     return send_email(to_email, subject, html_content)
 
 
-def send_credentials_email(to_email: str, user_name: str, user_id: str, new_password: str = None) -> bool:
+def send_credentials_email(to_email: str, user_name: str, user_ids: list = None, user_id: str = None, new_password: str = None) -> bool:
     """
     Send user credentials email (username recovery or password reset)
+    Can send single user_id or multiple user_ids for users with same email in different businesses
     
     Args:
         to_email: Recipient email address
         user_name: Name of the user
-        user_id: User ID
+        user_ids: List of dicts with user_id, role, business_id (for forgot username)
+        user_id: Single user ID (for backward compatibility)
         new_password: New temporary password (if password was reset)
     
     Returns:
@@ -228,6 +232,18 @@ def send_credentials_email(to_email: str, user_name: str, user_id: str, new_pass
                     <p style="color: #ff9800;"><strong>⚠️ Important:</strong> Please change this password after logging in for security.</p>
         """
     
+    # Handle multiple user IDs (forgot username scenario)
+    user_ids_html = ""
+    if user_ids and len(user_ids) > 1:
+        user_ids_html = "<p>You have multiple accounts with this email address:</p><ul>"
+        for uid_info in user_ids:
+            user_ids_html += f"""<li><strong>User ID:</strong> {uid_info['user_id']} - <strong>Role:</strong> {uid_info['role'].title()} (Business #{uid_info['business_id']})</li>"""
+        user_ids_html += "</ul><p>Please use the appropriate User ID based on which business you want to access.</p>"
+    elif user_ids and len(user_ids) == 1:
+        user_ids_html = f"""<p><strong>User ID:</strong> {user_ids[0]['user_id']}</p>"""
+    elif user_id:
+        user_ids_html = f"""<p><strong>User ID:</strong> {user_id}</p>"""
+    
     html_content = f"""
     <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
@@ -236,7 +252,7 @@ def send_credentials_email(to_email: str, user_name: str, user_id: str, new_pass
                 <p>Dear {user_name},</p>
                 <p>As requested, here are your login credentials:</p>
                 <div style="background-color: #f5f5f5; padding: 15px; border-left: 4px solid #4CAF50; margin: 20px 0;">
-                    <p><strong>User ID:</strong> {user_id}</p>
+                    {user_ids_html}
                     <p><strong>Email:</strong> {to_email}</p>
                     {password_info}
                 </div>

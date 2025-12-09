@@ -1,8 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import razorpay
-import hmac
-import hashlib
 import os
 import logging
 from dotenv import load_dotenv

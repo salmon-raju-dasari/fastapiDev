@@ -80,6 +80,16 @@ class Employee(EmployeeBase):
     def from_orm(cls, obj):
         instance = super().from_orm(obj)
         instance.user_id = f"USR{obj.emp_id}"
+        
+        # Load custom_fields from labels relationship
+        if hasattr(obj, 'labels') and obj.labels:
+            instance.custom_fields = [
+                {label.label_name: label.label_value} 
+                for label in obj.labels
+            ]
+        elif not instance.custom_fields:
+            instance.custom_fields = []
+            
         return instance
 
 class TokenWithRefresh(BaseModel):
@@ -126,12 +136,14 @@ class ResetPasswordRequest(BaseModel):
 
 class ForgotUsernameRequest(BaseModel):
     email: EmailStr = Field(..., description="Registered email address")
+    business_id: Optional[int] = Field(None, description="Business ID (optional - filter results to specific business)")
 
 class VerifyOTPRequest(BaseModel):
     email: EmailStr = Field(..., description="Email address")
     otp: str = Field(..., min_length=6, max_length=6, description="6-digit OTP")
 
 class ForgotPasswordOTPRequest(BaseModel):
+    user_id: str = Field(..., description="User ID (format: USR1000)")
     email: EmailStr = Field(..., description="Registered email address")
 
 

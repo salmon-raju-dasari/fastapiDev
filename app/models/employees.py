@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, JSON, Sequence, ForeignKey
+from sqlalchemy.orm import relationship
 from app.database import Base
 
 class Employee(Base):
@@ -25,7 +26,7 @@ class Employee(Base):
     )
     
     name = Column(String(100), index=True, nullable=False)
-    email = Column(String(100), unique=True, index=True, nullable=False)
+    email = Column(String(100), index=True, nullable=False)  # Not unique globally, unique per business
     phone_number = Column(String(20), nullable=False)
     aadhar_number = Column(String(12), nullable=True)
     address = Column(String(255), nullable=True)
@@ -41,3 +42,6 @@ class Employee(Base):
     store_id = Column(String(50), nullable=True)
     created_by = Column(Integer, ForeignKey('employees.emp_id', ondelete='SET NULL'), nullable=True)
     updated_by = Column(Integer, ForeignKey('employees.emp_id', ondelete='SET NULL'), nullable=True)
+    
+    # Relationship to custom labels
+    labels = relationship("EmployeeLabel", back_populates="employee", cascade="all, delete-orphan")
