@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models.employees import Employee
 from app.models.employee_labels import EmployeeLabel
 from app.models.business import Business
+from app.models.stores import Store
 from app.schemas.employees import (
     EmployeeCreate, 
     Employee as EmployeeSchema, 
@@ -19,13 +20,18 @@ from app.schemas.employees import (
     ResetPasswordRequest,
     ForgotUsernameRequest,
     VerifyOTPRequest,
-    ForgotPasswordOTPRequest
+    ForgotPasswordOTPRequest,
+    ChangePasswordRequest
 )
 from app.core.security import create_access_token, create_refresh_token, decode_token, is_refresh_token
 from app.core.dependencies import get_current_employee, require_role
 from passlib.context import CryptContext
 from app.utils.email_service import send_registration_email, send_password_reset_email, send_otp_email, send_credentials_email
 from app.utils.otp_service import store_otp, verify_otp
+from fastapi import UploadFile, File
+import os
+import shutil
+from pathlib import Path
 
 router = APIRouter()
 logging.basicConfig(level=logging.INFO)
@@ -264,6 +270,7 @@ async def create_employee(
             custom_fields=None,  # Don't store in JSON, use employee_labels table
             hashed_password=hashed_password,
             business_id=current_employee.business_id,  # Use the same business_id as the creator
+            store_id=employee.store_id,  # Store assignment
             created_by=current_employee.emp_id
         )
         
@@ -338,15 +345,85 @@ def get_employees(
     limit: int = 100,
     filter_field: str = None,
     filter_value: str = None,
+    filters: str = None,
     db: Session = Depends(get_db),
     current_employee: Employee = Depends(require_role(["owner", "admin", "manager"]))
 ):
     """Get all employees with pagination and filtering - requires owner, admin, or manager role"""
+    import json
+    
     # Start with base query - filter by current employee's business_id
     query = db.query(Employee).filter(Employee.business_id == current_employee.business_id)
     
-    # Apply filters if provided
-    if filter_field and filter_value:
+    # Parse multiple filters if provided (new feature)
+    filter_list = []
+    if filters:
+        try:
+            filter_list = json.loads(filters)
+        except:
+            pass
+    
+    # Track if we need to join Store table for store filtering
+    store_joined = False
+    
+    # Apply multiple filters
+    if filter_list:
+        for filter_item in filter_list:
+            filter_field_item = filter_item.get('field')
+            filter_value_item = filter_item.get('value')
+            
+            if not filter_field_item or not filter_value_item:
+                continue
+                
+            filter_value_lower = filter_value_item.lower()
+            
+            # Handle custom fields filtering using employee_labels table
+            if filter_field_item.startswith("custom_"):
+                custom_field_name = filter_field_item.replace("custom_", "")
+                # Query employee_labels table for matching labels
+                matching_labels = db.query(EmployeeLabel.emp_id).filter(
+                    EmployeeLabel.business_id == current_employee.business_id,
+                    EmployeeLabel.label_name == custom_field_name,
+                    EmployeeLabel.label_value.ilike(f"%{filter_value_item}%")
+                ).distinct().all()
+                
+                matching_ids = [label.emp_id for label in matching_labels]
+                
+                if matching_ids:
+                    query = query.filter(Employee.emp_id.in_(matching_ids))
+                else:
+                    # No matches found, return empty result
+                    query = query.filter(Employee.emp_id == -1)
+            else:
+                # Regular field filtering
+                if filter_field_item == "emp_id":
+                    # Exact match for emp_id
+                    if filter_value_item.isdigit():
+                        query = query.filter(Employee.emp_id == int(filter_value_item))
+                elif filter_field_item == "name":
+                    query = query.filter(Employee.name.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "email":
+                    query = query.filter(Employee.email.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "phone_number":
+                    query = query.filter(Employee.phone_number.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "aadhar_number":
+                    query = query.filter(Employee.aadhar_number.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "city":
+                    query = query.filter(Employee.city.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "state":
+                    query = query.filter(Employee.state.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "country":
+                    query = query.filter(Employee.country.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "role":
+                    query = query.filter(Employee.role.ilike(f"%{filter_value_item}%"))
+                elif filter_field_item == "store_id":
+                    # Filter by store name using subquery to avoid join conflicts
+                    if not store_joined:
+                        query = query.join(Store, Employee.store_id == Store.id, isouter=True)
+                        store_joined = True
+                    query = query.filter(Store.store_name.ilike(f"%{filter_value_item}%"))
+    # Legacy single filter support (for backward compatibility)
+    elif filter_field and filter_value:
         filter_value_lower = filter_value.lower()
         
         # Handle custom fields filtering using employee_labels table
@@ -388,6 +465,11 @@ def get_employees(
                 query = query.filter(Employee.country.ilike(f"%{filter_value}%"))
             elif filter_field == "role":
                 query = query.filter(Employee.role.ilike(f"%{filter_value}%"))
+            elif filter_field == "store_id":
+                # Filter by store name - join with Store table
+                query = query.join(Store, Employee.store_id == Store.id, isouter=True).filter(
+                    Store.store_name.ilike(f"%{filter_value}%")
+                )
     
     # Get total count after filtering
     total = query.count()
@@ -395,11 +477,54 @@ def get_employees(
     # Get paginated employees
     employees = query.offset(skip).limit(limit).all()
     
+    # Add formatted business_id_display, store_id_display, and store_name to each employee
+    import base64
+    employee_list = []
+    for emp in employees:
+        # Get store details if employee has a store_id
+        store_id_display = None
+        store_name = None
+        if emp.store_id:
+            store = db.query(Store).filter(Store.id == emp.store_id).first()
+            if store:
+                store_id_display = f"STR{store.store_sequence}"
+                store_name = store.store_name
+        
+        # Convert avatar blob to base64 if exists
+        avatar_base64 = None
+        if emp.avatar_blob:
+            avatar_base64 = base64.b64encode(emp.avatar_blob).decode('utf-8')
+        
+        emp_dict = {
+            "emp_id": emp.emp_id,
+            "business_id": emp.business_id,
+            "business_id_display": f"BUS{emp.business_id}",
+            "user_id": f"USR{emp.emp_id}",
+            "name": emp.name,
+            "email": emp.email,
+            "phone_number": emp.phone_number,
+            "aadhar_number": emp.aadhar_number,
+            "address": emp.address,
+            "city": emp.city,
+            "state": emp.state,
+            "country": emp.country,
+            "role": emp.role,
+            "joining_date": emp.joining_date,
+            "custom_fields": emp.custom_fields,
+            "store_id": emp.store_id,
+            "store_id_display": store_id_display,
+            "store_name": store_name,
+            "created_by": emp.created_by,
+            "updated_by": emp.updated_by,
+            "avatar_base64": avatar_base64
+        }
+        employee_list.append(emp_dict)
+    
     # Calculate page number (0-indexed)
     page = skip // limit if limit > 0 else 0
     
     return EmployeePaginatedResponse(
-        items=employees,
+        items=employee_list,
         total=total,
         page=page,
         page_size=limit
@@ -532,6 +657,76 @@ def define_custom_label(
         raise HTTPException(status_code=500, detail=f"Failed to save custom label: {str(e)}")
 
 
+# Profile endpoints - Must be before /{emp_id} route
+@router.get("/me", response_model=EmployeeSchema)
+def get_current_employee_profile(
+    current_employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db)
+):
+    """Get current logged-in employee profile data"""
+    logging.info(f"Getting profile for employee ID: {current_employee.emp_id}, Name: {current_employee.name}")
+    logging.info(f"Avatar blob size: {len(current_employee.avatar_blob) if current_employee.avatar_blob else 0} bytes")
+    
+    # Get store details if employee has a store_id
+    store_id_display = None
+    store_name = None
+    if current_employee.store_id:
+        store = db.query(Store).filter(Store.id == current_employee.store_id).first()
+        if store:
+            store_id_display = f"STR{store.store_sequence}"
+            store_name = store.store_name
+    
+    # Convert avatar blob to base64 if exists
+    import base64
+    avatar_base64 = None
+    if current_employee.avatar_blob:
+        avatar_base64 = base64.b64encode(current_employee.avatar_blob).decode('utf-8')
+    
+    # Return formatted response with business_id_display
+    return {
+        "emp_id": current_employee.emp_id,
+        "business_id": current_employee.business_id,
+        "business_id_display": f"BUS{current_employee.business_id}",
+        "user_id": f"USR{current_employee.emp_id}",
+        "name": current_employee.name,
+        "email": current_employee.email,
+        "phone_number": current_employee.phone_number,
+        "aadhar_number": current_employee.aadhar_number,
+        "address": current_employee.address,
+        "city": current_employee.city,
+        "state": current_employee.state,
+        "country": current_employee.country,
+        "role": current_employee.role,
+        "joining_date": current_employee.joining_date,
+        "custom_fields": current_employee.custom_fields,
+        "store_id": current_employee.store_id,
+        "store_id_display": store_id_display,
+        "store_name": store_name,
+        "created_by": current_employee.created_by,
+        "updated_by": current_employee.updated_by,
+        "avatar_base64": avatar_base64
+    }
+
+
+@router.get("/me/password", status_code=status.HTTP_200_OK)
+def get_current_employee_password(
+    current_employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db)
+):
+    """Get current employee's password (unhashed) - Security warning: Use with caution"""
+    # Note: This is generally not recommended in production
+    # Passwords should remain hashed. This is for demonstration purposes only.
+    # In a real application, you would NOT expose passwords.
+    
+    # Since passwords are hashed, we cannot retrieve the original password
+    # This endpoint returns a message indicating the password is encrypted
+    return {
+        "password": "••••••••",
+        "message": "Password is encrypted and cannot be retrieved. Use change password instead.",
+        "encrypted": True
+    }
+
+
 @router.get("/{emp_id}", response_model=EmployeeSchema)
 def get_employee(
     emp_id: int, 
@@ -545,7 +740,46 @@ def get_employee(
     ).first()
     if db_employee is None:
         raise HTTPException(status_code=404, detail="Employee not found")
-    return db_employee
+    
+    # Get store details if employee has a store_id
+    store_id_display = None
+    store_name = None
+    if db_employee.store_id:
+        store = db.query(Store).filter(Store.id == db_employee.store_id).first()
+        if store:
+            store_id_display = f"STR{store.store_sequence}"
+            store_name = store.store_name
+    
+    # Convert avatar blob to base64 if exists
+    import base64
+    avatar_base64 = None
+    if db_employee.avatar_blob:
+        avatar_base64 = base64.b64encode(db_employee.avatar_blob).decode('utf-8')
+    
+    # Return formatted response with business_id_display
+    return {
+        "emp_id": db_employee.emp_id,
+        "business_id": db_employee.business_id,
+        "business_id_display": f"BUS{db_employee.business_id}",
+        "user_id": f"USR{db_employee.emp_id}",
+        "name": db_employee.name,
+        "email": db_employee.email,
+        "phone_number": db_employee.phone_number,
+        "aadhar_number": db_employee.aadhar_number,
+        "address": db_employee.address,
+        "city": db_employee.city,
+        "state": db_employee.state,
+        "country": db_employee.country,
+        "role": db_employee.role,
+        "joining_date": db_employee.joining_date,
+        "custom_fields": db_employee.custom_fields,
+        "store_id": db_employee.store_id,
+        "store_id_display": store_id_display,
+        "store_name": store_name,
+        "created_by": db_employee.created_by,
+        "updated_by": db_employee.updated_by,
+        "avatar_base64": avatar_base64
+    }
 
 
 @router.put("/{emp_id}", response_model=EmployeeSchema)
@@ -883,13 +1117,25 @@ async def forgot_username_otp(request: ForgotUsernameRequest, db: Session = Depe
             # Don't reveal if email exists for security
             return {"message": "If the email is registered, your user IDs will be sent."}
         
-        # Prepare list of user IDs with business info
+        # Prepare list of user IDs with business info and store details
+        from app.models.stores import Store
         user_ids = []
         for emp in employees:
+            # Get store details if employee has a store_id
+            store_id_display = None
+            store_name = None
+            if emp.store_id:
+                store = db.query(Store).filter(Store.id == emp.store_id).first()
+                if store:
+                    store_id_display = f"STR{store.store_sequence}"
+                    store_name = store.store_name
+            
             user_ids.append({
                 "user_id": f"USR{emp.emp_id}",
                 "role": emp.role,
-                "business_id": emp.business_id
+                "business_id": f"BUS{emp.business_id}",
+                "store_id": store_id_display,
+                "store_name": store_name
             })
         
         # Send email with all user IDs
@@ -1114,4 +1360,93 @@ async def verify_otp_password(request: VerifyOTPRequest, db: Session = Depends(g
             detail="An error occurred processing your request"
         )
 
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+def change_password(
+    request: ChangePasswordRequest,
+    current_employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db)
+):
+    """Change password for current employee"""
+    # Verify current password
+    if not verify_password(request.current_password, current_employee.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    # Validate new password
+    if len(request.new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be at least 6 characters long"
+        )
+    
+    # Hash and update password
+    hashed_password = pwd_context.hash(request.new_password)
+    current_employee.hashed_password = hashed_password
+    db.commit()
+    
+    return {"message": "Password changed successfully"}
+
+
+@router.post("/upload-avatar", status_code=status.HTTP_200_OK)
+async def upload_avatar(
+    avatar: UploadFile = File(...),
+    current_employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db)
+):
+    """Upload avatar for current employee - stores as BLOB in database"""
+    # Validate file type
+    if not avatar.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an image"
+        )
+    
+    # Validate file size (max 2MB)
+    avatar.file.seek(0, 2)
+    file_size = avatar.file.tell()
+    avatar.file.seek(0)
+    
+    if file_size > 2 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size must not exceed 2MB"
+        )
+    
+    # Read file content as binary
+    try:
+        avatar.file.seek(0)
+        file_content = await avatar.read()
+    except Exception as e:
+        logging.error(f"Error reading avatar: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read avatar file"
+        )
+    
+    # Store avatar as BLOB in database
+    import base64
+    try:
+        current_employee.avatar_blob = file_content
+        db.commit()
+        db.refresh(current_employee)
+        
+        logging.info(f"Avatar uploaded successfully for employee {current_employee.emp_id}")
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Error saving avatar to database: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save avatar to database"
+        )
+    
+    # Return base64 encoded avatar for immediate display
+    avatar_base64 = base64.b64encode(file_content).decode('utf-8')
+    
+    return {
+        "message": "Avatar uploaded successfully",
+        "avatar_base64": avatar_base64
+    }
 

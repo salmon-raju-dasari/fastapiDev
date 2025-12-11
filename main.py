@@ -2,7 +2,9 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from app.database import Base, engine
+import os
 
 # import models so they are registered on the metadata
 # import app.models.user  # noqa: F401  # Commented out - using employees table now
@@ -25,6 +27,12 @@ from app.routes.payment import router as payment_router
 from app.routes.custom_labels import router as custom_labels_router
 
 app = FastAPI()
+
+# Create uploads directory if it doesn't exist
+os.makedirs("uploads/avatars", exist_ok=True)
+
+# Mount static files for avatars
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Configure CORS
 app.add_middleware(

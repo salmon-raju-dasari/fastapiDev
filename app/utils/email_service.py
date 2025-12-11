@@ -237,10 +237,20 @@ def send_credentials_email(to_email: str, user_name: str, user_ids: list = None,
     if user_ids and len(user_ids) > 1:
         user_ids_html = "<p>You have multiple accounts with this email address:</p><ul>"
         for uid_info in user_ids:
-            user_ids_html += f"""<li><strong>User ID:</strong> {uid_info['user_id']} - <strong>Role:</strong> {uid_info['role'].title()} (Business #{uid_info['business_id']})</li>"""
+            store_info = ""
+            if uid_info.get('store_name'):
+                store_info = f" - <strong>Store:</strong> {uid_info['store_name']} ({uid_info['store_id']})"
+            elif uid_info.get('store_id'):
+                store_info = f" - <strong>Store:</strong> {uid_info['store_id']}"
+            user_ids_html += f"""<li><strong>User ID:</strong> {uid_info['user_id']} - <strong>Role:</strong> {uid_info['role'].title()} - <strong>Business ID:</strong> {uid_info['business_id']}{store_info}</li>"""
         user_ids_html += "</ul><p>Please use the appropriate User ID based on which business you want to access.</p>"
     elif user_ids and len(user_ids) == 1:
-        user_ids_html = f"""<p><strong>User ID:</strong> {user_ids[0]['user_id']}</p>"""
+        store_info = ""
+        if user_ids[0].get('store_name'):
+            store_info = f"<p><strong>Store:</strong> {user_ids[0]['store_name']} ({user_ids[0]['store_id']})</p>"
+        elif user_ids[0].get('store_id'):
+            store_info = f"<p><strong>Store:</strong> {user_ids[0]['store_id']}</p>"
+        user_ids_html = f"""<p><strong>User ID:</strong> {user_ids[0]['user_id']}</p><p><strong>Business ID:</strong> {user_ids[0]['business_id']}</p>{store_info}"""
     elif user_id:
         user_ids_html = f"""<p><strong>User ID:</strong> {user_id}</p>"""
     

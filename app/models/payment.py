@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.database import Base
 
 class Payment(Base):
@@ -19,4 +19,5 @@ class Payment(Base):
     payment_contact = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True)  # Payment expiration time
     verified = Column(Boolean, default=False, nullable=False)

@@ -23,10 +23,17 @@ class StoreUpdate(BaseModel):
 
 class StoreResponse(StoreBase):
     id: int
-    store_id: str
     business_id: str
+    store_id: str = Field(default="", description="Formatted store ID (STR1, STR2, etc.)")
+    store_sequence: int
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
+    
+    @classmethod
+    def from_orm(cls, obj):
+        data = super().from_orm(obj)
+        data.store_id = f"STR{obj.store_sequence}"
+        return data

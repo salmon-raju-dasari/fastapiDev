@@ -4,6 +4,7 @@ import razorpay
 import os
 import logging
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 from app.database import get_db
 from app.models.payment import Payment
 from app.models.employees import Employee
@@ -51,13 +52,29 @@ async def create_payment_order(
     """
     try:
         # Verify user exists
-        emp_id_str = request.user_id.replace("USR", "")
+        logger.info(f"Received payment order request for user_id: {request.user_id}")
+        
+        if not request.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User ID is required"
+            )
+        
+        # Handle both formats: "USR123" and "123" (case-insensitive)
+        emp_id_str = request.user_id.upper().replace("USR", "").strip()
+        
+        if not emp_id_str:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user ID format. Expected format: USR1000"
+            )
+        
         try:
             emp_id = int(emp_id_str)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid user ID format"
+                detail=f"Invalid user ID format: '{request.user_id}'. Expected format: USR1000"
             )
         
         employee = db.query(Employee).filter(Employee.emp_id == emp_id).first()
@@ -74,30 +91,17 @@ async def create_payment_order(
                 detail="Only business owner can make payment. Please contact your business owner."
             )
         
-        # Check if payment already completed for this business
+        # Check if there's an existing payment for this business (paid or unpaid)
         existing_payment = db.query(Payment).filter(
-            Payment.business_id == employee.business_id,
-            Payment.status == "paid",
-            Payment.verified == True
+            Payment.business_id == employee.business_id
         ).first()
         
-        if existing_payment:
+        # If payment already completed, reject
+        if existing_payment and existing_payment.status == "paid" and existing_payment.verified:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Payment already completed for this business"
             )
-        
-        # Check if there's a pending payment (created but not completed)
-        pending_payment = db.query(Payment).filter(
-            Payment.business_id == employee.business_id,
-            Payment.status.in_(["created", "attempted"])
-        ).first()
-        
-        # If pending payment exists, delete it to allow retry
-        if pending_payment:
-            logger.info(f"Deleting pending payment for business {employee.business_id} to allow retry")
-            db.delete(pending_payment)
-            db.commit()
         
         # Create Razorpay order
         order_data = {
@@ -119,17 +123,38 @@ async def create_payment_order(
                 detail="Unable to create payment order. Please try again in a few moments."
             )
         
-        # Save order to database
+        # Update existing payment or create new one
         try:
-            payment = Payment(
-                user_id=emp_id,
-                business_id=employee.business_id,
-                razorpay_order_id=razorpay_order["id"],
-                amount=request.amount,
-                currency="INR",
-                status="created"
-            )
-            db.add(payment)
+            # Set expiration: 1 month (30 days)
+            expiration_time = datetime.utcnow() + timedelta(days=30)
+            
+            if existing_payment:
+                # Update existing payment record
+                logger.info(f"Updating existing payment for business {employee.business_id}")
+                existing_payment.user_id = emp_id
+                existing_payment.razorpay_order_id = razorpay_order["id"]
+                existing_payment.amount = request.amount
+                existing_payment.currency = "INR"
+                existing_payment.status = "created"
+                existing_payment.verified = False
+                existing_payment.razorpay_payment_id = None
+                existing_payment.razorpay_signature = None
+                existing_payment.expires_at = expiration_time
+                payment = existing_payment
+            else:
+                # Create new payment record
+                logger.info(f"Creating new payment for business {employee.business_id}")
+                payment = Payment(
+                    user_id=emp_id,
+                    business_id=employee.business_id,
+                    razorpay_order_id=razorpay_order["id"],
+                    amount=request.amount,
+                    currency="INR",
+                    status="created",
+                    expires_at=expiration_time
+                )
+                db.add(payment)
+            
             db.commit()
             db.refresh(payment)
         except Exception as db_error:
@@ -210,7 +235,7 @@ async def verify_payment(
                 detail="Failed to verify payment with Razorpay"
             )
         
-        # Update payment record
+        # Update payment record with new expiry date (extend by 1 month)
         payment.razorpay_payment_id = request.razorpay_payment_id
         payment.razorpay_signature = request.razorpay_signature
         payment.status = "paid"
@@ -218,6 +243,7 @@ async def verify_payment(
         payment.payment_method = razorpay_payment.get("method")
         payment.payment_email = razorpay_payment.get("email")
         payment.payment_contact = razorpay_payment.get("contact")
+        payment.expires_at = datetime.utcnow() + timedelta(days=30)  # Extend expiry by 1 month
         
         db.commit()
         
@@ -248,8 +274,8 @@ async def get_payment_status(
     Check if user's business has completed payment
     """
     try:
-        # Convert USR prefix to integer emp_id
-        emp_id_str = user_id.replace("USR", "")
+        # Convert USR prefix to integer emp_id (case-insensitive)
+        emp_id_str = user_id.upper().replace("USR", "")
         try:
             emp_id = int(emp_id_str)
         except ValueError:
@@ -276,12 +302,36 @@ async def get_payment_status(
         is_owner = employee.role.lower() == "owner"
         
         if payment:
+            # Check if payment has expired
+            current_time = datetime.utcnow()
+            if payment.expires_at and current_time > payment.expires_at:
+                # Payment expired - mark as expired and return as not completed
+                logger.info(f"Payment expired for business {employee.business_id}. Expiry time: {payment.expires_at}")
+                payment.status = "expired"
+                db.commit()
+                
+                message = None
+                if not is_owner:
+                    message = "Payment expired. Please contact your business owner to renew the subscription."
+                else:
+                    message = "Your payment has expired. Please renew your subscription."
+                
+                return {
+                    "payment_completed": False,
+                    "is_owner": is_owner,
+                    "message": message,
+                    "expired": True,
+                    "expired_at": payment.expires_at
+                }
+            
+            # Payment still valid
             return {
                 "payment_completed": True,
                 "is_owner": is_owner,
                 "payment_id": payment.razorpay_payment_id,
                 "amount": payment.amount,
-                "paid_at": payment.updated_at
+                "paid_at": payment.updated_at,
+                "expires_at": payment.expires_at
             }
         else:
             message = None

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -7,9 +7,9 @@ class Store(Base):
     __tablename__ = "stores"
 
     id = Column(Integer, primary_key=True, index=True)
-    store_id = Column(String(100), unique=True, nullable=False, index=True)  # UUID
     business_id = Column(String(100), ForeignKey("business.business_id"), nullable=False)
-    store_name = Column(String(200), nullable=False)
+    store_sequence = Column(Integer, nullable=False)  # Sequence per business (1, 2, 3...)
+    store_name = Column(String(200), nullable=False, index=True)
     store_address = Column(String(500))
     store_city = Column(String(100))
     store_state = Column(String(100))
@@ -22,3 +22,8 @@ class Store(Base):
     
     # Relationship with business
     business = relationship("Business", backref="stores")
+    
+    # Composite unique constraint: store_name must be unique within a business
+    __table_args__ = (
+        UniqueConstraint('business_id', 'store_name', name='uq_business_store_name'),
+    )

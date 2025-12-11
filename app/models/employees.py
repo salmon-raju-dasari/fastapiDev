@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, JSON, Sequence, ForeignKey
+from sqlalchemy import Column, Integer, String, JSON, Sequence, ForeignKey, LargeBinary
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -37,9 +37,10 @@ class Employee(Base):
     joining_date = Column(String(10), nullable=True)  # Stored as dd/mm/yyyy
     custom_fields = Column(JSON, nullable=True)  # Array of {labelname: labelvalue}
     hashed_password = Column(String(255), nullable=False)
+    avatar_blob = Column(LargeBinary, nullable=True)  # Avatar image stored as binary data
     
     # Audit columns
-    store_id = Column(String(50), nullable=True)
+    store_id = Column(Integer, nullable=True)  # Foreign key to stores.id
     created_by = Column(Integer, ForeignKey('employees.emp_id', ondelete='SET NULL'), nullable=True)
     updated_by = Column(Integer, ForeignKey('employees.emp_id', ondelete='SET NULL'), nullable=True)
     
