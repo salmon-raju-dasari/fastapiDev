@@ -330,6 +330,16 @@ async def delete_store(
         
         logger.info(f"User {current_user.name} is deleting store: {store.store_name}")
         
+        # First, set store_id to NULL for all employees assigned to this store
+        affected_employees = db.query(Employee).filter(
+            Employee.store_id == store_id,
+            Employee.business_id == current_user.business_id
+        ).update({"store_id": None}, synchronize_session=False)
+        
+        if affected_employees > 0:
+            logger.info(f"Set store_id to NULL for {affected_employees} employees")
+        
+        # Now delete the store
         db.delete(store)
         db.commit()
         

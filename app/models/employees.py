@@ -40,7 +40,7 @@ class Employee(Base):
     avatar_blob = Column(LargeBinary, nullable=True)  # Avatar image stored as binary data
     
     # Audit columns
-    store_id = Column(Integer, nullable=True)  # Foreign key to stores.id
+    store_id = Column(Integer, ForeignKey('stores.id', ondelete='SET NULL'), nullable=True)  # Foreign key to stores.id with CASCADE
     created_by = Column(Integer, ForeignKey('employees.emp_id', ondelete='SET NULL'), nullable=True)
     updated_by = Column(Integer, ForeignKey('employees.emp_id', ondelete='SET NULL'), nullable=True)
     
