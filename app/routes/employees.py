@@ -490,6 +490,15 @@ def get_employees(
                 store_id_display = f"STR{store.store_sequence}"
                 store_name = store.store_name
         
+        # Load custom fields from employee_labels table
+        custom_fields = []
+        labels = db.query(EmployeeLabel).filter(
+            EmployeeLabel.emp_id == emp.emp_id,
+            EmployeeLabel.business_id == emp.business_id
+        ).all()
+        for label in labels:
+            custom_fields.append({label.label_name: label.label_value})
+        
         # Convert avatar blob to base64 if exists
         avatar_base64 = None
         if emp.avatar_blob:
@@ -510,7 +519,7 @@ def get_employees(
             "country": emp.country,
             "role": emp.role,
             "joining_date": emp.joining_date,
-            "custom_fields": emp.custom_fields,
+            "custom_fields": custom_fields if custom_fields else None,
             "store_id": emp.store_id,
             "store_id_display": store_id_display,
             "store_name": store_name,
@@ -676,6 +685,15 @@ def get_current_employee_profile(
             store_id_display = f"STR{store.store_sequence}"
             store_name = store.store_name
     
+    # Load custom fields from employee_labels table
+    custom_fields = []
+    labels = db.query(EmployeeLabel).filter(
+        EmployeeLabel.emp_id == current_employee.emp_id,
+        EmployeeLabel.business_id == current_employee.business_id
+    ).all()
+    for label in labels:
+        custom_fields.append({label.label_name: label.label_value})
+    
     # Convert avatar blob to base64 if exists
     import base64
     avatar_base64 = None
@@ -698,7 +716,7 @@ def get_current_employee_profile(
         "country": current_employee.country,
         "role": current_employee.role,
         "joining_date": current_employee.joining_date,
-        "custom_fields": current_employee.custom_fields,
+        "custom_fields": custom_fields if custom_fields else None,
         "store_id": current_employee.store_id,
         "store_id_display": store_id_display,
         "store_name": store_name,
@@ -750,6 +768,15 @@ def get_employee(
             store_id_display = f"STR{store.store_sequence}"
             store_name = store.store_name
     
+    # Load custom fields from employee_labels table
+    custom_fields = []
+    labels = db.query(EmployeeLabel).filter(
+        EmployeeLabel.emp_id == db_employee.emp_id,
+        EmployeeLabel.business_id == db_employee.business_id
+    ).all()
+    for label in labels:
+        custom_fields.append({label.label_name: label.label_value})
+    
     # Convert avatar blob to base64 if exists
     import base64
     avatar_base64 = None
@@ -772,7 +799,7 @@ def get_employee(
         "country": db_employee.country,
         "role": db_employee.role,
         "joining_date": db_employee.joining_date,
-        "custom_fields": db_employee.custom_fields,
+        "custom_fields": custom_fields if custom_fields else None,
         "store_id": db_employee.store_id,
         "store_id_display": store_id_display,
         "store_name": store_name,

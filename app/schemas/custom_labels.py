@@ -1,22 +1,25 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import datetime
 
 class CustomLabelCreate(BaseModel):
     """Schema for creating a custom label"""
     label_name: str = Field(..., min_length=1, max_length=100, description="Name of the custom label")
     label_values: List[str] = Field(..., min_items=1, description="Array of predefined values for this label")
+    label_type: Literal["employee", "product"] = Field(default="employee", description="Type of label: 'employee' or 'product'")
 
 class CustomLabelUpdate(BaseModel):
     """Schema for updating a custom label"""
     label_name: Optional[str] = Field(None, min_length=1, max_length=100, description="Updated name of the custom label")
     label_values: List[str] = Field(..., min_items=1, description="Array of predefined values for this label")
+    label_type: Optional[Literal["employee", "product"]] = Field(None, description="Type of label: 'employee' or 'product'")
 
 class CustomLabel(BaseModel):
     """Schema for custom label response"""
     id: int
     label_name: str
     label_values: List[str]
+    label_type: str
     business_id: int
     created_at: datetime
     updated_at: datetime

@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, DatabaseError, OperationalError
@@ -25,13 +25,21 @@ def parse_exception_to_error_detail(e: Exception, context: str = "") -> dict:
         error_msg = str(e.orig) if hasattr(e, 'orig') else str(e)
         
         if "unique constraint" in error_msg.lower() or "duplicate key" in error_msg.lower():
-            if "name" in error_msg.lower():
+            if "productid" in error_msg.lower():
                 return {
                     "error": "DuplicateEntryError",
-                    "message": "A product with this name already exists in the database",
-                    "field": "name",
+                    "message": "A product with this product ID already exists in the database",
+                    "field": "productid",
                     "type": "duplicate_constraint",
-                    "suggestion": "Please use a different product name"
+                    "suggestion": "Please use a different product ID"
+                }
+            elif "barcode" in error_msg.lower():
+                return {
+                    "error": "DuplicateEntryError",
+                    "message": "A product with this barcode already exists in the database",
+                    "field": "barcode",
+                    "type": "duplicate_constraint",
+                    "suggestion": "Please use a different barcode"
                 }
             elif "sku" in error_msg.lower():
                 return {
@@ -53,7 +61,7 @@ def parse_exception_to_error_detail(e: Exception, context: str = "") -> dict:
                 "error": "MissingRequiredFieldError",
                 "message": "One or more required fields are missing",
                 "type": "missing_field",
-                "suggestion": "Please ensure all required fields (name, price, quantity, sku) are provided"
+                "suggestion": "Please ensure all required fields (productid, productname, barcode, price) are provided"
             }
         elif "foreign key" in error_msg.lower():
             return {
@@ -121,6 +129,7 @@ def parse_exception_to_error_detail(e: Exception, context: str = "") -> dict:
             "suggestion": "Please try again or contact support if the issue persists"
         }
 
+
 @router.post("/addProducts", response_model=List[ProductResponse], status_code=status.HTTP_201_CREATED)
 def add_products(
     products: List[ProductBase], 
@@ -131,12 +140,12 @@ def add_products(
     Add new products - requires owner, admin, or manager role
     
     Validates all required fields and returns meaningful error messages:
-    - name: Required, 1-100 characters
-    - price: Required, must be greater than 0
-    - quantity: Required, must be 0 or greater
-    - sku: Required, unique, 1-50 characters
-    - description: Optional, max 255 characters
-    - category: Optional, max 50 characters
+    - productid: Required, unique, 1-100 characters
+    - productname: Required, 1-500 characters
+    - barcode: Required, 1-100 characters
+    - price: Required, must be greater than 0, stored with 2 decimal places
+    - productimages: Optional, max 5 images
+    - All other fields: Optional with specific validations
     """
     logging.info(f"User {current_user.name} adding {len(products)} product(s)")
     
@@ -157,40 +166,66 @@ def add_products(
         
         for idx, product in enumerate(products):
             try:
-                # Check if product with same name already exists
-                existing_name = db.query(Products).filter(Products.name == product.name).first()
-                if existing_name:
+                # Check if product with same productid already exists
+                existing_productid = db.query(Products).filter(Products.productid == product.productid).first()
+                if existing_productid:
                     errors.append({
                         "product_index": idx,
-                        "field": "name",
-                        "value": product.name,
-                        "error": f"Product with name '{product.name}' already exists",
+                        "field": "productid",
+                        "value": product.productid,
+                        "error": f"Product with ID '{product.productid}' already exists",
                         "type": "duplicate_entry"
                     })
                     continue
                 
-                # Check if product with same SKU already exists
-                existing_sku = db.query(Products).filter(Products.sku == product.sku).first()
-                if existing_sku:
+                # Check if product with same barcode already exists
+                existing_barcode = db.query(Products).filter(Products.barcode == product.barcode).first()
+                if existing_barcode:
                     errors.append({
                         "product_index": idx,
-                        "field": "sku",
-                        "value": product.sku,
-                        "error": f"Product with SKU '{product.sku}' already exists",
+                        "field": "barcode",
+                        "value": product.barcode,
+                        "error": f"Product with barcode '{product.barcode}' already exists",
                         "type": "duplicate_entry"
                     })
                     continue
+                
+                # Check if product with same SKU already exists (if SKU provided)
+                if product.sku:
+                    existing_sku = db.query(Products).filter(Products.sku == product.sku).first()
+                    if existing_sku:
+                        errors.append({
+                            "product_index": idx,
+                            "field": "sku",
+                            "value": product.sku,
+                            "error": f"Product with SKU '{product.sku}' already exists",
+                            "type": "duplicate_entry"
+                        })
+                        continue
                 
                 # Create the product
                 db_product = Products(
-                    name=product.name,
-                    description=product.description,
-                    price=product.price,
-                    category=product.category,
-                    quantity=product.quantity,
+                    productid=product.productid,
+                    productname=product.productname,
+                    barcode=product.barcode,
                     sku=product.sku,
+                    description=product.description,
+                    brand=product.brand,
+                    category=product.category,
+                    productimages=product.productimages,
+                    price=product.price,
+                    unitvalue=product.unitvalue,
+                    unit=product.unit,
+                    discount=product.discount,
+                    gst=product.gst,
+                    openingstock=product.openingstock,
+                    quantity=product.openingstock if product.openingstock else 0,  # Set quantity to openingstock
+                    mfgdate=product.mfgdate,
+                    expirydate=product.expirydate,
+                    suppliername=product.suppliername,
+                    suppliercontact=product.suppliercontact,
+                    customfields=product.customfields,
                     updated_by=current_user.name
-                    # id, created_at and updated_at are automatically set by the database
                 )
                 db.add(db_product)
                 db.flush()  # Flush to get the auto-generated id and catch DB errors
@@ -202,9 +237,12 @@ def add_products(
                 
                 # Parse specific database constraint errors
                 if "unique constraint" in error_msg.lower() or "duplicate key" in error_msg.lower():
-                    if "name" in error_msg.lower():
-                        field = "name"
-                        message = f"Product name '{product.name}' already exists"
+                    if "productid" in error_msg.lower():
+                        field = "productid"
+                        message = f"Product ID '{product.productid}' already exists"
+                    elif "barcode" in error_msg.lower():
+                        field = "barcode"
+                        message = f"Barcode '{product.barcode}' already exists"
                     elif "sku" in error_msg.lower():
                         field = "sku"
                         message = f"SKU '{product.sku}' already exists"
@@ -272,16 +310,66 @@ def add_products(
             detail=error_detail
         )
 
-@router.get("/getProducts", response_model=List[ProductResponse])
+
+@router.get("/getProducts")
 def get_products(
+    skip: int = 0,
+    limit: int = 10,
     db: Session = Depends(get_db),
     current_user: Employee = Depends(get_current_employee)
 ):
-    """Get all products - requires authentication (all roles can view)"""
-    logging.info(f"User {current_user.name} fetching all products")
+    """
+    Get all products with pagination - requires authentication (all roles can view)
+    Returns paginated products with total count
+    
+    Parameters:
+    - skip: Number of records to skip (for pagination)
+    - limit: Number of records to return (max per page)
+    """
+    logging.info(f"User {current_user.name} fetching products (skip={skip}, limit={limit})")
     try:
-        products = db.query(Products).all()
-        return products
+        # Get total count
+        total = db.query(Products).count()
+        
+        # Get paginated products
+        products = db.query(Products).offset(skip).limit(limit).all()
+        
+        # Convert to response format
+        products_list = []
+        for product in products:
+            product_dict = {
+                "id": product.id,
+                "productid": product.productid,
+                "productname": product.productname,
+                "barcode": product.barcode,
+                "sku": product.sku,
+                "description": product.description,
+                "brand": product.brand,
+                "category": product.category,
+                "productimages": product.productimages,
+                "price": product.price,
+                "unitvalue": product.unitvalue,
+                "unit": product.unit,
+                "discount": product.discount,
+                "gst": product.gst,
+                "quantity": product.quantity,
+                "openingstock": product.openingstock,
+                "mfgdate": product.mfgdate,
+                "expirydate": product.expirydate,
+                "suppliername": product.suppliername,
+                "suppliercontact": product.suppliercontact,
+                "customfields": product.customfields,
+                "created_at": product.created_at,
+                "updated_at": product.updated_at
+            }
+            products_list.append(product_dict)
+        
+        return {
+            "items": products_list,
+            "total": total,
+            "skip": skip,
+            "limit": limit
+        }
     except Exception as e:
         logging.error(f"Error fetching products: {str(e)}", exc_info=True)
         error_detail = parse_exception_to_error_detail(e, "fetching products")
@@ -289,281 +377,262 @@ def get_products(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_detail
         )
-    
 
 
-# @router.put("/updateProduct/{sku}", response_model=ProductResponse)
-# def update_product(
-#     sku: str,
-#     product_data: ProductBase,
-#     db: Session = Depends(get_db),
-#     current_user: User = Depends(require_role(["admin", "manager"]))
-# ):
-#     """Update a product by SKU - requires admin or manager role"""
-#     logging.info(f"User {current_user.username} updating product SKU {sku}")
-#     try:
-#         product = db.query(Products).filter(Products.sku == sku).first()
-#         if not product:
-#             raise HTTPException(
-#                 status_code=status.HTTP_404_NOT_FOUND,
-#                 detail={
-#                     "error": "NotFoundError",
-#                     "message": f"Product with SKU {sku} not found",
-#                     "type": "not_found"
-#                 }
-#             )
-#         # Update fields
-#         for key, value in product_data.model_dump().items():
-#             setattr(product, key, value)
-#         product.updated_by = current_user.username
-#         db.commit()
-#         db.refresh(product)
-#         logging.info(f"Product SKU {sku} updated successfully")
-#         return product
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         db.rollback()
-#         logging.error(f"Error updating product SKU {sku}: {str(e)}", exc_info=True)
-#         error_detail = parse_exception_to_error_detail(e, f"updating product with SKU '{sku}'")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail=error_detail
-#         )
+@router.get("/getProduct/{product_id}", response_model=ProductResponse)
+def get_product_by_id(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_employee)
+):
+    """
+    Get a single product by ID - requires authentication
+    Used for populating edit form with product details
+    """
+    logging.info(f"User {current_user.name} fetching product ID {product_id}")
+    try:
+        product = db.query(Products).filter(Products.id == product_id).first()
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "NotFoundError",
+                    "message": f"Product with ID {product_id} not found",
+                    "type": "not_found"
+                }
+            )
+        return product
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error fetching product ID {product_id}: {str(e)}", exc_info=True)
+        error_detail = parse_exception_to_error_detail(e, f"fetching product with ID {product_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_detail
+        )
 
-# @router.delete("/deleteProduct/{sku}", status_code=status.HTTP_204_NO_CONTENT)
-# def delete_product(
-#     sku: str,
-#     db: Session = Depends(get_db),
-#     current_user: User = Depends(require_role(["admin", "manager"]))
-# ):
-#     """Delete a product by SKU - requires admin or manager role"""
-#     logging.info(f"User {current_user.username} deleting product SKU {sku}")
-#     try:
-#         product = db.query(Products).filter(Products.sku == sku).first()
-#         if not product:
-#             raise HTTPException(
-#                 status_code=status.HTTP_404_NOT_FOUND,
-#                 detail={
-#                     "error": "NotFoundError",
-#                     "message": f"Product with SKU {sku} not found",
-#                     "type": "not_found"
-#                 }
-#             )
-#         db.delete(product)
-#         db.commit()
-#         logging.info(f"Product SKU {sku} deleted successfully")
-#         return
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         db.rollback()
-#         logging.error(f"Error deleting product SKU {sku}: {str(e)}", exc_info=True)
-#         error_detail = parse_exception_to_error_detail(e, f"deleting product with SKU '{sku}'")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail=error_detail
-#         )
 
-@router.put("/updateProducts", status_code=status.HTTP_200_OK)
-def update_products_bulk(
-    updates: List[dict],
+@router.get("/getProductByProductId/{productid}", response_model=ProductResponse)
+def get_product_by_productid(
+    productid: str,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_employee)
+):
+    """
+    Get a single product by productid - requires authentication
+    Used for searching/filtering products by productid
+    """
+    logging.info(f"User {current_user.name} fetching product with productid {productid}")
+    try:
+        product = db.query(Products).filter(Products.productid == productid).first()
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "NotFoundError",
+                    "message": f"Product with productid '{productid}' not found",
+                    "type": "not_found"
+                }
+            )
+        return product
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error fetching product productid {productid}: {str(e)}", exc_info=True)
+        error_detail = parse_exception_to_error_detail(e, f"fetching product with productid '{productid}'")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_detail
+        )
+
+
+@router.put("/updateProduct/{product_id}", response_model=ProductResponse)
+def update_product(
+    product_id: int,
+    product_data: ProductUpdate,
     db: Session = Depends(get_db),
     current_user: Employee = Depends(require_role(["owner", "admin", "manager"]))
 ):
     """
-    Bulk update products by SKU - requires owner, admin, or manager role
-    
-    Request format: [
-        {
-            "current_sku": "PROD001",  // SKU to find the product
-            "updates": {               // Fields to update (all optional)
-                "name": "New Name",
-                "sku": "NEW_SKU",      // Can update SKU to a new value
-                "price": 999.99,
-                "quantity": 100,
-                "category": "New Category",
-                "description": "New description"
-            }
-        },
-        ...
-    ]
-    
-    Returns detailed results for each product with success/failure status.
-    You can update name and SKU - the system will check for duplicates before updating.
+    Update a product by ID - requires owner, admin, or manager role
+    All fields are optional - only provided fields will be updated
+    Used when editing a product from the product card/form
     """
-    logging.info(f"User {current_user.name} bulk updating {len(updates)} product(s)")
+    logging.info(f"User {current_user.name} updating product ID {product_id}")
     
-    if not updates:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "ValidationError",
-                "message": "No products provided for update",
-                "type": "missing_data"
-            }
-        )
-    
-    results = []
-    successful_count = 0
-    failed_count = 0
-    
-    for idx, item in enumerate(updates):
-        current_sku = item.get("current_sku")
-        update_data = item.get("updates")
-        
-        if not current_sku:
-            results.append({
-                "product_index": idx,
-                "current_sku": current_sku,
-                "status": "failed",
-                "error": "Missing current_sku field to identify the product",
-                "type": "missing_data"
-            })
-            failed_count += 1
-            continue
-        
-        if not update_data:
-            results.append({
-                "product_index": idx,
-                "current_sku": current_sku,
-                "status": "failed",
-                "error": "Missing updates field with data to update",
-                "type": "missing_data"
-            })
-            failed_count += 1
-            continue
-        
-        try:
-            # Find product by current SKU
-            product = db.query(Products).filter(Products.sku == current_sku).first()
-            if not product:
-                results.append({
-                    "product_index": idx,
-                    "current_sku": current_sku,
-                    "status": "failed",
-                    "error": f"Product with SKU '{current_sku}' not found",
+    try:
+        product = db.query(Products).filter(Products.id == product_id).first()
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "NotFoundError",
+                    "message": f"Product with ID {product_id} not found",
                     "type": "not_found"
-                })
-                failed_count += 1
-                continue
-            
-            # Validate update data
-            try:
-                validated = ProductUpdate(**update_data)
-            except Exception as ve:
-                error_detail = parse_exception_to_error_detail(ve, f"validating update data for product with SKU '{current_sku}'")
-                results.append({
-                    "product_index": idx,
-                    "current_sku": current_sku,
-                    "status": "failed",
-                    "error": error_detail.get("message", "Validation failed"),
-                    "error_details": error_detail,
-                    "type": "validation_error"
-                })
-                failed_count += 1
-                continue
-            
-            # Check for duplicate name if name is being updated
-            if validated.name and validated.name != product.name:
-                existing_name = db.query(Products).filter(
-                    Products.name == validated.name,
-                    Products.id != product.id
-                ).first()
-                if existing_name:
-                    results.append({
-                        "product_index": idx,
-                        "current_sku": current_sku,
-                        "status": "failed",
-                        "error": f"Product with name '{validated.name}' already exists",
-                        "field": "name",
+                }
+            )
+        
+        # Get only the fields that were actually provided in the update
+        update_dict = product_data.model_dump(exclude_unset=True)
+        
+        if not update_dict:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "ValidationError",
+                    "message": "No fields provided for update",
+                    "type": "missing_data"
+                }
+            )
+        
+        # Check for duplicate productid if it's being updated
+        if "productid" in update_dict and update_dict["productid"] != product.productid:
+            existing = db.query(Products).filter(
+                Products.productid == update_dict["productid"],
+                Products.id != product_id
+            ).first()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "DuplicateEntryError",
+                        "message": f"Product with productid '{update_dict['productid']}' already exists",
+                        "field": "productid",
                         "type": "duplicate_entry"
-                    })
-                    failed_count += 1
-                    continue
-            
-            # Check for duplicate SKU if SKU is being updated
-            if validated.sku and validated.sku != product.sku:
-                existing_sku = db.query(Products).filter(
-                    Products.sku == validated.sku,
-                    Products.id != product.id
-                ).first()
-                if existing_sku:
-                    results.append({
-                        "product_index": idx,
-                        "current_sku": current_sku,
-                        "status": "failed",
-                        "error": f"Product with SKU '{validated.sku}' already exists",
+                    }
+                )
+        
+        # Check for duplicate barcode if it's being updated
+        if "barcode" in update_dict and update_dict["barcode"] != product.barcode:
+            existing = db.query(Products).filter(
+                Products.barcode == update_dict["barcode"],
+                Products.id != product_id
+            ).first()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "DuplicateEntryError",
+                        "message": f"Product with barcode '{update_dict['barcode']}' already exists",
+                        "field": "barcode",
+                        "type": "duplicate_entry"
+                    }
+                )
+        
+        # Check for duplicate SKU if it's being updated
+        if "sku" in update_dict and update_dict["sku"] and update_dict["sku"] != product.sku:
+            existing = db.query(Products).filter(
+                Products.sku == update_dict["sku"],
+                Products.id != product_id
+            ).first()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "DuplicateEntryError",
+                        "message": f"Product with SKU '{update_dict['sku']}' already exists",
                         "field": "sku",
                         "type": "duplicate_entry"
-                    })
-                    failed_count += 1
-                    continue
-            
-            # Update only provided fields
-            update_dict = validated.model_dump(exclude_unset=True)
-            for key, value in update_dict.items():
-                setattr(product, key, value)
-            
-            product.updated_by = current_user.name
-            
-            db.commit()
-            db.refresh(product)
-            
-            results.append({
-                "product_index": idx,
-                "current_sku": current_sku,
-                "new_sku": product.sku,
-                "status": "success",
-                "product": ProductResponse.model_validate(product).model_dump(),
-                "message": f"Product updated successfully (old SKU: '{current_sku}', new SKU: '{product.sku}')"
-            })
-            successful_count += 1
-            
-        except Exception as e:
-            db.rollback()
-            error_detail = parse_exception_to_error_detail(e, f"updating product with SKU '{current_sku}'")
-            results.append({
-                "product_index": idx,
-                "current_sku": current_sku,
-                "status": "failed",
-                "error": error_detail.get("message", "Update failed"),
-                "error_details": error_detail,
-                "type": error_detail.get("type", "server_error")
-            })
-            failed_count += 1
+                    }
+                )
+        
+        # Update fields
+        for key, value in update_dict.items():
+            setattr(product, key, value)
+        
+        product.updated_by = current_user.name
+        
+        db.commit()
+        db.refresh(product)
+        
+        logging.info(f"Product ID {product_id} updated successfully")
+        return product
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Error updating product ID {product_id}: {str(e)}", exc_info=True)
+        error_detail = parse_exception_to_error_detail(e, f"updating product with ID {product_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_detail
+        )
+
+
+@router.delete("/deleteProduct/{product_id}", status_code=status.HTTP_200_OK)
+def delete_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(require_role(["owner", "admin", "manager"]))
+):
+    """
+    Delete a product by ID - requires owner, admin, or manager role
+    Used when deleting a product from the product card
+    """
+    logging.info(f"User {current_user.name} deleting product ID {product_id}")
     
-    logging.info(f"Bulk update completed: {successful_count} successful, {failed_count} failed")
-    
-    return {
-        "summary": {
-            "total": len(updates),
-            "successful": successful_count,
-            "failed": failed_count
-        },
-        "results": results
-    }
+    try:
+        product = db.query(Products).filter(Products.id == product_id).first()
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "NotFoundError",
+                    "message": f"Product with ID {product_id} not found",
+                    "type": "not_found"
+                }
+            )
+        
+        product_info = {
+            "id": product.id,
+            "productid": product.productid,
+            "productname": product.productname
+        }
+        
+        db.delete(product)
+        db.commit()
+        
+        logging.info(f"Product ID {product_id} deleted successfully")
+        return {
+            "status": "success",
+            "message": f"Product deleted successfully",
+            "deleted_product": product_info
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Error deleting product ID {product_id}: {str(e)}", exc_info=True)
+        error_detail = parse_exception_to_error_detail(e, f"deleting product with ID {product_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_detail
+        )
+
 
 @router.delete("/deleteProducts", status_code=status.HTTP_200_OK)
 def delete_products_bulk(
-    skus: List[str],
+    product_ids: List[int],
     db: Session = Depends(get_db),
     current_user: Employee = Depends(require_role(["owner", "admin", "manager"]))
 ):
     """
-    Bulk delete products by SKU - requires owner, admin, or manager role
+    Bulk delete products by IDs - requires owner, admin, or manager role
     
-    Request format: ["SKU001", "SKU002", ...]
+    Request format: [1, 2, 3, 4, 5]
     Returns detailed results for each product with success/failure status
     """
-    logging.info(f"User {current_user.name} bulk deleting {len(skus)} product(s)")
+    logging.info(f"User {current_user.name} bulk deleting {len(product_ids)} product(s)")
     
-    if not skus:
+    if not product_ids:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "ValidationError",
-                "message": "No SKUs provided for deletion",
+                "message": "No product IDs provided for deletion",
                 "type": "missing_data"
             }
         )
@@ -572,48 +641,44 @@ def delete_products_bulk(
     successful_count = 0
     failed_count = 0
     
-    for idx, sku in enumerate(skus):
-        if not sku or not sku.strip():
-            results.append({
-                "product_index": idx,
-                "sku": sku,
-                "status": "failed",
-                "error": "SKU is empty or invalid",
-                "type": "invalid_sku"
-            })
-            failed_count += 1
-            continue
-        
+    for idx, product_id in enumerate(product_ids):
         try:
-            product = db.query(Products).filter(Products.sku == sku).first()
+            product = db.query(Products).filter(Products.id == product_id).first()
             if not product:
                 results.append({
                     "product_index": idx,
-                    "sku": sku,
+                    "product_id": product_id,
                     "status": "failed",
-                    "error": f"Product with SKU '{sku}' not found",
+                    "error": f"Product with ID {product_id} not found",
                     "type": "not_found"
                 })
                 failed_count += 1
                 continue
+            
+            product_info = {
+                "id": product.id,
+                "productid": product.productid,
+                "productname": product.productname
+            }
             
             db.delete(product)
             db.commit()
             
             results.append({
                 "product_index": idx,
-                "sku": sku,
+                "product_id": product_id,
                 "status": "success",
-                "message": f"Product '{sku}' deleted successfully"
+                "message": f"Product '{product_info['productname']}' deleted successfully",
+                "deleted_product": product_info
             })
             successful_count += 1
             
         except Exception as e:
             db.rollback()
-            error_detail = parse_exception_to_error_detail(e, f"deleting product with SKU '{sku}'")
+            error_detail = parse_exception_to_error_detail(e, f"deleting product with ID {product_id}")
             results.append({
                 "product_index": idx,
-                "sku": sku,
+                "product_id": product_id,
                 "status": "failed",
                 "error": error_detail.get("message", "Deletion failed"),
                 "error_details": error_detail,
@@ -625,9 +690,70 @@ def delete_products_bulk(
     
     return {
         "summary": {
-            "total": len(skus),
+            "total": len(product_ids),
             "successful": successful_count,
             "failed": failed_count
         },
         "results": results
     }
+
+
+@router.get("/searchProducts", response_model=List[ProductResponse])
+def search_products(
+    query: Optional[str] = None,
+    category: Optional[str] = None,
+    brand: Optional[str] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_employee)
+):
+    """
+    Search and filter products - requires authentication
+    
+    Query parameters:
+    - query: Search in productname, productid, barcode, SKU
+    - category: Filter by category
+    - brand: Filter by brand
+    - min_price: Minimum price filter
+    - max_price: Maximum price filter
+    """
+    logging.info(f"User {current_user.name} searching products with filters")
+    
+    try:
+        products_query = db.query(Products)
+        
+        # Search in multiple fields
+        if query:
+            search_term = f"%{query}%"
+            products_query = products_query.filter(
+                (Products.productname.ilike(search_term)) |
+                (Products.productid.ilike(search_term)) |
+                (Products.barcode.ilike(search_term)) |
+                (Products.sku.ilike(search_term))
+            )
+        
+        # Filter by category
+        if category:
+            products_query = products_query.filter(Products.category.ilike(f"%{category}%"))
+        
+        # Filter by brand
+        if brand:
+            products_query = products_query.filter(Products.brand.ilike(f"%{brand}%"))
+        
+        # Filter by price range
+        if min_price is not None:
+            products_query = products_query.filter(Products.price >= min_price)
+        if max_price is not None:
+            products_query = products_query.filter(Products.price <= max_price)
+        
+        products = products_query.all()
+        return products
+        
+    except Exception as e:
+        logging.error(f"Error searching products: {str(e)}", exc_info=True)
+        error_detail = parse_exception_to_error_detail(e, "searching products")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_detail
+        )

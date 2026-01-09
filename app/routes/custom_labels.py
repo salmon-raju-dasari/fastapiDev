@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import logging
 from app.database import get_db
 from app.models.employees import Employee
@@ -26,16 +26,17 @@ def create_custom_label(
     Create a new custom label with predefined values.
     Only owner, admin, or manager can create custom labels.
     """
-    # Check if label already exists for this business
+    # Check if label already exists for this business and type
     existing_label = db.query(CustomLabel).filter(
         CustomLabel.business_id == current_employee.business_id,
-        CustomLabel.label_name == label_data.label_name
+        CustomLabel.label_name == label_data.label_name,
+        CustomLabel.label_type == label_data.label_type
     ).first()
     
     if existing_label:
         raise HTTPException(
             status_code=400,
-            detail=f"Label '{label_data.label_name}' already exists for this business"
+            detail=f"Label '{label_data.label_name}' of type '{label_data.label_type}' already exists for this business"
         )
     
     try:
@@ -43,6 +44,7 @@ def create_custom_label(
         custom_label = CustomLabel(
             label_name=label_data.label_name,
             label_values=label_data.label_values,
+            label_type=label_data.label_type,
             business_id=current_employee.business_id
         )
         
@@ -62,16 +64,24 @@ def create_custom_label(
 
 @router.get("/custom-labels", response_model=List[CustomLabelSchema])
 def get_custom_labels(
+    label_type: Optional[str] = None,
     db: Session = Depends(get_db),
     current_employee: Employee = Depends(require_role(["owner", "admin", "manager"]))
 ):
     """
     Get all custom labels for the current business.
+    Optionally filter by label_type ('employee' or 'product').
     Returns list of labels with their predefined values.
     """
-    labels = db.query(CustomLabel).filter(
+    query = db.query(CustomLabel).filter(
         CustomLabel.business_id == current_employee.business_id
-    ).order_by(CustomLabel.label_name).all()
+    )
+    
+    # Filter by label_type if provided
+    if label_type:
+        query = query.filter(CustomLabel.label_type == label_type)
+    
+    labels = query.order_by(CustomLabel.label_name).all()
     
     return labels
 
@@ -114,19 +124,24 @@ def update_custom_label(
         raise HTTPException(status_code=404, detail="Custom label not found")
     
     try:
+        # Update label type if provided
+        if label_data.label_type:
+            label.label_type = label_data.label_type
+        
         # Update label name if provided
         if label_data.label_name:
             # Check if new name conflicts with existing label
             existing = db.query(CustomLabel).filter(
                 CustomLabel.business_id == current_employee.business_id,
                 CustomLabel.label_name == label_data.label_name,
+                CustomLabel.label_type == label.label_type,
                 CustomLabel.id != label_id
             ).first()
             
             if existing:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Label '{label_data.label_name}' already exists for this business"
+                    detail=f"Label '{label_data.label_name}' of type '{label.label_type}' already exists for this business"
                 )
             
             label.label_name = label_data.label_name
