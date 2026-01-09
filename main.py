@@ -37,7 +37,13 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=[
+        "*",  # Allow all origins
+        "http://136.114.116.97",
+        "https://136.114.116.97",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
