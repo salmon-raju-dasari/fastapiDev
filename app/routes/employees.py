@@ -477,27 +477,45 @@ def get_employees(
     # Get paginated employees
     employees = query.offset(skip).limit(limit).all()
     
-    # Add formatted business_id_display, store_id_display, and store_name to each employee
+    # PERFORMANCE OPTIMIZATION: Fetch all stores and labels in bulk
     import base64
+    
+    # Get all employee IDs
+    emp_ids = [emp.emp_id for emp in employees]
+    
+    # Bulk fetch all stores for these employees
+    store_ids = [emp.store_id for emp in employees if emp.store_id]
+    stores_dict = {}
+    if store_ids:
+        stores = db.query(Store).filter(Store.id.in_(store_ids)).all()
+        stores_dict = {store.id: store for store in stores}
+    
+    # Bulk fetch all labels for these employees  
+    labels_query = db.query(EmployeeLabel).filter(
+        EmployeeLabel.emp_id.in_(emp_ids),
+        EmployeeLabel.business_id == current_employee.business_id
+    ).all()
+    
+    # Group labels by emp_id
+    labels_by_emp = {}
+    for label in labels_query:
+        if label.emp_id not in labels_by_emp:
+            labels_by_emp[label.emp_id] = []
+        labels_by_emp[label.emp_id].append({label.label_name: label.label_value})
+    
+    # Build response list
     employee_list = []
     for emp in employees:
-        # Get store details if employee has a store_id
+        # Get store details from dict (no query)
         store_id_display = None
         store_name = None
-        if emp.store_id:
-            store = db.query(Store).filter(Store.id == emp.store_id).first()
-            if store:
-                store_id_display = f"STR{store.store_sequence}"
-                store_name = store.store_name
+        if emp.store_id and emp.store_id in stores_dict:
+            store = stores_dict[emp.store_id]
+            store_id_display = f"STR{store.store_sequence}"
+            store_name = store.store_name
         
-        # Load custom fields from employee_labels table
-        custom_fields = []
-        labels = db.query(EmployeeLabel).filter(
-            EmployeeLabel.emp_id == emp.emp_id,
-            EmployeeLabel.business_id == emp.business_id
-        ).all()
-        for label in labels:
-            custom_fields.append({label.label_name: label.label_value})
+        # Get custom fields from dict (no query)
+        custom_fields = labels_by_emp.get(emp.emp_id, [])
         
         # Convert avatar blob to base64 if exists
         avatar_base64 = None
