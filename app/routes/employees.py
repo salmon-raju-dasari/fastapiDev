@@ -483,25 +483,29 @@ def get_employees(
     # Get all employee IDs
     emp_ids = [emp.emp_id for emp in employees]
     
-    # Bulk fetch all stores for these employees
-    store_ids = [emp.store_id for emp in employees if emp.store_id]
+    # Initialize dicts
     stores_dict = {}
-    if store_ids:
-        stores = db.query(Store).filter(Store.id.in_(store_ids)).all()
-        stores_dict = {store.id: store for store in stores}
-    
-    # Bulk fetch all labels for these employees  
-    labels_query = db.query(EmployeeLabel).filter(
-        EmployeeLabel.emp_id.in_(emp_ids),
-        EmployeeLabel.business_id == current_employee.business_id
-    ).all()
-    
-    # Group labels by emp_id
     labels_by_emp = {}
-    for label in labels_query:
-        if label.emp_id not in labels_by_emp:
-            labels_by_emp[label.emp_id] = []
-        labels_by_emp[label.emp_id].append({label.label_name: label.label_value})
+    
+    # Only fetch if there are employees
+    if emp_ids:
+        # Bulk fetch all stores for these employees
+        store_ids = [emp.store_id for emp in employees if emp.store_id]
+        if store_ids:
+            stores = db.query(Store).filter(Store.id.in_(store_ids)).all()
+            stores_dict = {store.id: store for store in stores}
+        
+        # Bulk fetch all labels for these employees  
+        labels_query = db.query(EmployeeLabel).filter(
+            EmployeeLabel.emp_id.in_(emp_ids),
+            EmployeeLabel.business_id == current_employee.business_id
+        ).all()
+        
+        # Group labels by emp_id
+        for label in labels_query:
+            if label.emp_id not in labels_by_emp:
+                labels_by_emp[label.emp_id] = []
+            labels_by_emp[label.emp_id].append({label.label_name: label.label_value})
     
     # Build response list
     employee_list = []
