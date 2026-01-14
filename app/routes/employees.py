@@ -490,7 +490,7 @@ def get_employees(
     # Only fetch if there are employees
     if emp_ids:
         # Bulk fetch all stores for these employees
-        store_ids = [emp.store_id for emp in employees if emp.store_id]
+        store_ids = list(set([emp.store_id for emp in employees if emp.store_id]))
         if store_ids:
             stores = db.query(Store).filter(Store.id.in_(store_ids)).all()
             stores_dict = {store.id: store for store in stores}
@@ -521,9 +521,10 @@ def get_employees(
         # Get custom fields from dict (no query)
         custom_fields = labels_by_emp.get(emp.emp_id, [])
         
-        # Convert avatar blob to base64 if exists
+        # PERFORMANCE: Only encode avatar if it exists and is under 500KB
+        # Large avatars should be fetched via separate endpoint
         avatar_base64 = None
-        if emp.avatar_blob:
+        if emp.avatar_blob and len(emp.avatar_blob) < 500000:  # 500KB limit
             avatar_base64 = base64.b64encode(emp.avatar_blob).decode('utf-8')
         
         emp_dict = {
@@ -764,6 +765,42 @@ def get_current_employee_password(
         "password": "••••••••",
         "message": "Password is encrypted and cannot be retrieved. Use change password instead.",
         "encrypted": True
+    }
+
+
+@router.get("/avatar/{emp_id}", status_code=status.HTTP_200_OK)
+def get_employee_avatar(
+    emp_id: int,
+    db: Session = Depends(get_db),
+    current_employee: Employee = Depends(get_current_employee)
+):
+    """Get employee avatar as base64 - separate endpoint for better performance"""
+    import base64
+    
+    # Check if requesting own avatar or has permission to view others
+    if emp_id != current_employee.emp_id and current_employee.role not in ["owner", "admin", "manager"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view your own avatar"
+        )
+    
+    employee = db.query(Employee).filter(
+        Employee.emp_id == emp_id,
+        Employee.business_id == current_employee.business_id
+    ).first()
+    
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    if not employee.avatar_blob:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    
+    avatar_base64 = base64.b64encode(employee.avatar_blob).decode('utf-8')
+    
+    return {
+        "emp_id": emp_id,
+        "avatar_base64": avatar_base64,
+        "size_bytes": len(employee.avatar_blob)
     }
 
 
