@@ -521,11 +521,9 @@ def get_employees(
         # Get custom fields from dict (no query)
         custom_fields = labels_by_emp.get(emp.emp_id, [])
         
-        # PERFORMANCE: Only encode avatar if it exists and is under 500KB
-        # Large avatars should be fetched via separate endpoint
+        # PERFORMANCE: Don't encode avatars in list endpoint
+        # Use GET /employees/avatar/{emp_id} to fetch avatars separately
         avatar_base64 = None
-        if emp.avatar_blob and len(emp.avatar_blob) < 500000:  # 500KB limit
-            avatar_base64 = base64.b64encode(emp.avatar_blob).decode('utf-8')
         
         emp_dict = {
             "emp_id": emp.emp_id,
