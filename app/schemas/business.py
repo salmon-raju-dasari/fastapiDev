@@ -41,8 +41,7 @@ class BusinessUpdate(BaseModel):
     upi_id: Optional[str] = Field(None, max_length=100)
 
 class BusinessResponse(BaseModel):
-    id: int
-    business_id: str  # Auto-generated unique business ID
+    business_id: str  # Primary key - unique business ID
     business_name: str
     business_type: Optional[str] = None
     category: Optional[str] = None
