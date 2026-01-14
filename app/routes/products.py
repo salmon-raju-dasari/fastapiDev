@@ -205,6 +205,7 @@ def add_products(
                 
                 # Create the product
                 db_product = Products(
+                    business_id=str(current_user.business_id),
                     productid=product.productid,
                     productname=product.productname,
                     barcode=product.barcode,
@@ -328,11 +329,14 @@ def get_products(
     """
     logging.info(f"User {current_user.name} fetching products (skip={skip}, limit={limit})")
     try:
+        # Filter by business_id
+        query = db.query(Products).filter(Products.business_id == str(current_user.business_id))
+        
         # Get total count
-        total = db.query(Products).count()
+        total = query.count()
         
         # Get paginated products
-        products = db.query(Products).offset(skip).limit(limit).all()
+        products = query.offset(skip).limit(limit).all()
         
         # Convert to response format
         products_list = []
@@ -391,7 +395,10 @@ def get_product_by_id(
     """
     logging.info(f"User {current_user.name} fetching product ID {product_id}")
     try:
-        product = db.query(Products).filter(Products.id == product_id).first()
+        product = db.query(Products).filter(
+            Products.id == product_id,
+            Products.business_id == str(current_user.business_id)
+        ).first()
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -425,7 +432,10 @@ def get_product_by_productid(
     """
     logging.info(f"User {current_user.name} fetching product with productid {productid}")
     try:
-        product = db.query(Products).filter(Products.productid == productid).first()
+        product = db.query(Products).filter(
+            Products.productid == productid,
+            Products.business_id == str(current_user.business_id)
+        ).first()
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -462,7 +472,10 @@ def update_product(
     logging.info(f"User {current_user.name} updating product ID {product_id}")
     
     try:
-        product = db.query(Products).filter(Products.id == product_id).first()
+        product = db.query(Products).filter(
+            Products.id == product_id,
+            Products.business_id == str(current_user.business_id)
+        ).first()
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -574,7 +587,10 @@ def delete_product(
     logging.info(f"User {current_user.name} deleting product ID {product_id}")
     
     try:
-        product = db.query(Products).filter(Products.id == product_id).first()
+        product = db.query(Products).filter(
+            Products.id == product_id,
+            Products.business_id == str(current_user.business_id)
+        ).first()
         if not product:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -643,7 +659,10 @@ def delete_products_bulk(
     
     for idx, product_id in enumerate(product_ids):
         try:
-            product = db.query(Products).filter(Products.id == product_id).first()
+            product = db.query(Products).filter(
+                Products.id == product_id,
+                Products.business_id == str(current_user.business_id)
+            ).first()
             if not product:
                 results.append({
                     "product_index": idx,
@@ -721,7 +740,8 @@ def search_products(
     logging.info(f"User {current_user.name} searching products with filters")
     
     try:
-        products_query = db.query(Products)
+        # Filter by business_id first
+        products_query = db.query(Products).filter(Products.business_id == str(current_user.business_id))
         
         # Search in multiple fields
         if query:
