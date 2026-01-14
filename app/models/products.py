@@ -8,6 +8,7 @@ class Products(Base):
     __tablename__ = "products"
     
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    business_id = Column(String(50), nullable=False, index=True)  # Links product to business
     
     # Product Identification
     productid = Column(String(100), unique=True, index=True, nullable=False)
