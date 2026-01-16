@@ -78,7 +78,8 @@ class Employee(EmployeeBase):
     store_name: Optional[str] = Field(None, description="Store name")
     created_by: Optional[int] = None
     updated_by: Optional[int] = None
-    avatar_base64: Optional[str] = None
+    avatar_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -93,7 +94,6 @@ class Employee(EmployeeBase):
     @classmethod
     def extract_from_orm(cls, data):
         """Extract and transform data from ORM object"""
-        import base64
         
         # If data is an ORM object (has __dict__), extract attributes
         if hasattr(data, '__dict__'):
@@ -103,7 +103,8 @@ class Employee(EmployeeBase):
             # Copy all basic fields
             for field_name in ['emp_id', 'business_id', 'store_id', 'created_by', 'updated_by',
                               'name', 'email', 'phone_number', 'aadhar_number', 'address',
-                              'city', 'state', 'country', 'role', 'joining_date']:
+                              'city', 'state', 'country', 'role', 'joining_date', 
+                              'avatar_url', 'thumbnail_url']:
                 if hasattr(obj, field_name):
                     result[field_name] = getattr(obj, field_name)
             
@@ -121,12 +122,6 @@ class Employee(EmployeeBase):
                 result['custom_fields'] = obj.custom_fields
             else:
                 result['custom_fields'] = []
-            
-            # Convert avatar_blob to base64
-            if hasattr(obj, 'avatar_blob') and obj.avatar_blob:
-                result['avatar_base64'] = base64.b64encode(obj.avatar_blob).decode('utf-8')
-            else:
-                result['avatar_base64'] = None
             
             return result
         

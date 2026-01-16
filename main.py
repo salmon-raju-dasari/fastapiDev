@@ -41,6 +41,10 @@ app.add_middleware(
         "*",  # Allow all origins
         "http://136.114.116.97",
         "https://136.114.116.97",
+        "http://192.168.1.2:5173",
+        "https://192.168.1.2:5173",
+        "http://192.168.1.2:8000",
+        "https://192.168.1.2:8000",
         "http://localhost:5173",
         "http://localhost:3000",
     ],

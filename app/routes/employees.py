@@ -29,6 +29,7 @@ from passlib.context import CryptContext
 from app.utils.email_service import send_registration_email, send_password_reset_email, send_otp_email, send_credentials_email
 from app.utils.otp_service import store_otp, verify_otp
 from fastapi import UploadFile, File
+from app.services.storage_service import storage_service
 import os
 import shutil
 from pathlib import Path
@@ -521,9 +522,9 @@ def get_employees(
         # Get custom fields from dict (no query)
         custom_fields = labels_by_emp.get(emp.emp_id, [])
         
-        # PERFORMANCE: Don't encode avatars in list endpoint
-        # Use GET /employees/avatar/{emp_id} to fetch avatars separately
-        avatar_base64 = None
+        # Avatars are now stored as URLs in GCS
+        avatar_url = emp.avatar_url
+        thumbnail_url = emp.thumbnail_url
         
         emp_dict = {
             "emp_id": emp.emp_id,
@@ -546,7 +547,8 @@ def get_employees(
             "store_name": store_name,
             "created_by": emp.created_by,
             "updated_by": emp.updated_by,
-            "avatar_base64": avatar_base64
+            "avatar_url": avatar_url,
+            "thumbnail_url": thumbnail_url
         }
         employee_list.append(emp_dict)
     
@@ -695,7 +697,6 @@ def get_current_employee_profile(
 ):
     """Get current logged-in employee profile data"""
     logging.info(f"Getting profile for employee ID: {current_employee.emp_id}, Name: {current_employee.name}")
-    logging.info(f"Avatar blob size: {len(current_employee.avatar_blob) if current_employee.avatar_blob else 0} bytes")
     
     # Get store details if employee has a store_id
     store_id_display = None
@@ -715,11 +716,7 @@ def get_current_employee_profile(
     for label in labels:
         custom_fields.append({label.label_name: label.label_value})
     
-    # Convert avatar blob to base64 if exists
-    import base64
-    avatar_base64 = None
-    if current_employee.avatar_blob:
-        avatar_base64 = base64.b64encode(current_employee.avatar_blob).decode('utf-8')
+    logging.info(f"Employee profile retrieved for: {current_employee.name}")
     
     # Return formatted response with business_id_display
     return {
@@ -743,7 +740,8 @@ def get_current_employee_profile(
         "store_name": store_name,
         "created_by": current_employee.created_by,
         "updated_by": current_employee.updated_by,
-        "avatar_base64": avatar_base64
+        "avatar_url": current_employee.avatar_url,
+        "thumbnail_url": current_employee.thumbnail_url
     }
 
 
@@ -766,40 +764,91 @@ def get_current_employee_password(
     }
 
 
-@router.get("/avatar/{emp_id}", status_code=status.HTTP_200_OK)
-def get_employee_avatar(
-    emp_id: int,
-    db: Session = Depends(get_db),
-    current_employee: Employee = Depends(get_current_employee)
+@router.post("/avatar/upload", status_code=status.HTTP_200_OK)
+@router.post("/upload-avatar", status_code=status.HTTP_200_OK)
+async def upload_avatar(
+    avatar: UploadFile = File(...),
+    current_employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db)
 ):
-    """Get employee avatar as base64 - separate endpoint for better performance"""
-    import base64
-    
-    # Check if requesting own avatar or has permission to view others
-    if emp_id != current_employee.emp_id and current_employee.role not in ["owner", "admin", "manager"]:
+    """Upload avatar for current employee to Google Cloud Storage"""
+    # Validate file type
+    if not avatar.content_type.startswith("image/"):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view your own avatar"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an image"
         )
     
-    employee = db.query(Employee).filter(
-        Employee.emp_id == emp_id,
-        Employee.business_id == current_employee.business_id
-    ).first()
+    # Validate file size (max 5MB)
+    avatar.file.seek(0, 2)
+    file_size = avatar.file.tell()
+    avatar.file.seek(0)
     
-    if not employee:
-        raise HTTPException(status_code=404, detail="Employee not found")
+    if file_size > 5 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size must not exceed 5MB"
+        )
     
-    if not employee.avatar_blob:
-        raise HTTPException(status_code=404, detail="Avatar not found")
+    try:
+        # Delete old avatar if exists
+        if current_employee.avatar_url:
+            storage_service.delete_image(current_employee.avatar_url)
+        
+        # Upload new avatar with thumbnail
+        result = await storage_service.upload_image(avatar, "avatars", create_thumbnail=True)
+        
+        # Update employee record
+        current_employee.avatar_url = result["url"]
+        current_employee.thumbnail_url = result.get("thumbnail_url")
+        db.commit()
+        db.refresh(current_employee)
+        
+        logging.info(f"Avatar uploaded successfully for employee {current_employee.emp_id}")
+        
+        return {
+            "message": "Avatar uploaded successfully",
+            "avatar_url": current_employee.avatar_url,
+            "thumbnail_url": current_employee.thumbnail_url
+        }
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Error uploading avatar: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload avatar: {str(e)}"
+        )
+
+
+@router.delete("/avatar", status_code=status.HTTP_200_OK)
+async def delete_avatar(
+    current_employee: Employee = Depends(get_current_employee),
+    db: Session = Depends(get_db)
+):
+    """Delete avatar for current employee"""
+    if not current_employee.avatar_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No avatar found"
+        )
     
-    avatar_base64 = base64.b64encode(employee.avatar_blob).decode('utf-8')
-    
-    return {
-        "emp_id": emp_id,
-        "avatar_base64": avatar_base64,
-        "size_bytes": len(employee.avatar_blob)
-    }
+    try:
+        # Delete from GCS
+        storage_service.delete_image(current_employee.avatar_url)
+        
+        # Update employee record
+        current_employee.avatar_url = None
+        current_employee.thumbnail_url = None
+        db.commit()
+        
+        return {"message": "Avatar deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Error deleting avatar: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete avatar: {str(e)}"
+        )
 
 
 @router.get("/{emp_id}", response_model=EmployeeSchema)
@@ -834,12 +883,6 @@ def get_employee(
     for label in labels:
         custom_fields.append({label.label_name: label.label_value})
     
-    # Convert avatar blob to base64 if exists
-    import base64
-    avatar_base64 = None
-    if db_employee.avatar_blob:
-        avatar_base64 = base64.b64encode(db_employee.avatar_blob).decode('utf-8')
-    
     # Return formatted response with business_id_display
     return {
         "emp_id": db_employee.emp_id,
@@ -862,7 +905,8 @@ def get_employee(
         "store_name": store_name,
         "created_by": db_employee.created_by,
         "updated_by": db_employee.updated_by,
-        "avatar_base64": avatar_base64
+        "avatar_url": db_employee.avatar_url,
+        "thumbnail_url": db_employee.thumbnail_url
     }
 
 
@@ -1474,63 +1518,5 @@ def change_password(
     return {"message": "Password changed successfully"}
 
 
-@router.post("/upload-avatar", status_code=status.HTTP_200_OK)
-async def upload_avatar(
-    avatar: UploadFile = File(...),
-    current_employee: Employee = Depends(get_current_employee),
-    db: Session = Depends(get_db)
-):
-    """Upload avatar for current employee - stores as BLOB in database"""
-    # Validate file type
-    if not avatar.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image"
-        )
-    
-    # Validate file size (max 2MB)
-    avatar.file.seek(0, 2)
-    file_size = avatar.file.tell()
-    avatar.file.seek(0)
-    
-    if file_size > 2 * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File size must not exceed 2MB"
-        )
-    
-    # Read file content as binary
-    try:
-        avatar.file.seek(0)
-        file_content = await avatar.read()
-    except Exception as e:
-        logging.error(f"Error reading avatar: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to read avatar file"
-        )
-    
-    # Store avatar as BLOB in database
-    import base64
-    try:
-        current_employee.avatar_blob = file_content
-        db.commit()
-        db.refresh(current_employee)
-        
-        logging.info(f"Avatar uploaded successfully for employee {current_employee.emp_id}")
-    except Exception as e:
-        db.rollback()
-        logging.error(f"Error saving avatar to database: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to save avatar to database"
-        )
-    
-    # Return base64 encoded avatar for immediate display
-    avatar_base64 = base64.b64encode(file_content).decode('utf-8')
-    
-    return {
-        "message": "Avatar uploaded successfully",
-        "avatar_base64": avatar_base64
-    }
+
 
