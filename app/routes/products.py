@@ -166,18 +166,6 @@ def add_products(
         
         for idx, product in enumerate(products):
             try:
-                # Check if product with same productid already exists
-                existing_productid = db.query(Products).filter(Products.productid == product.productid).first()
-                if existing_productid:
-                    errors.append({
-                        "product_index": idx,
-                        "field": "productid",
-                        "value": product.productid,
-                        "error": f"Product with ID '{product.productid}' already exists",
-                        "type": "duplicate_entry"
-                    })
-                    continue
-                
                 # Check if product with same barcode already exists
                 existing_barcode = db.query(Products).filter(Products.barcode == product.barcode).first()
                 if existing_barcode:
@@ -203,10 +191,10 @@ def add_products(
                         })
                         continue
                 
-                # Create the product
+                # Create the product without productid (will be auto-generated after insert)
                 db_product = Products(
                     business_id=str(current_user.business_id),
-                    productid=product.productid,
+                    productid=None,  # Will be set after getting auto-generated ID
                     productname=product.productname,
                     barcode=product.barcode,
                     sku=product.sku,
@@ -229,7 +217,12 @@ def add_products(
                     updated_by=current_user.name
                 )
                 db.add(db_product)
-                db.flush()  # Flush to get the auto-generated id and catch DB errors
+                db.flush()  # Flush to get the auto-generated id
+                
+                # Set productid as PRD{id} after getting auto-generated ID
+                db_product.productid = f"PRD{db_product.id}"
+                db.flush()  # Update with formatted productid
+                
                 created_products.append(db_product)
                 
             except IntegrityError as ie:
@@ -343,7 +336,7 @@ def get_products(
         for product in products:
             product_dict = {
                 "id": product.id,
-                "productid": product.productid,
+                "productid": product.productid if product.productid else f"PRD{product.id}",
                 "productname": product.productname,
                 "barcode": product.barcode,
                 "sku": product.sku,
@@ -498,23 +491,6 @@ def update_product(
                     "type": "missing_data"
                 }
             )
-        
-        # Check for duplicate productid if it's being updated
-        if "productid" in update_dict and update_dict["productid"] != product.productid:
-            existing = db.query(Products).filter(
-                Products.productid == update_dict["productid"],
-                Products.id != product_id
-            ).first()
-            if existing:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "error": "DuplicateEntryError",
-                        "message": f"Product with productid '{update_dict['productid']}' already exists",
-                        "field": "productid",
-                        "type": "duplicate_entry"
-                    }
-                )
         
         # Check for duplicate barcode if it's being updated
         if "barcode" in update_dict and update_dict["barcode"] != product.barcode:

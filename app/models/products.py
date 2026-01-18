@@ -11,7 +11,7 @@ class Products(Base):
     business_id = Column(String(50), nullable=False, index=True)  # Links product to business
     
     # Product Identification
-    productid = Column(String(100), unique=True, index=True, nullable=False)
+    productid = Column(String(100), unique=True, index=True, nullable=True)  # Auto-generated as PRD{id}
     productname = Column(String(500), nullable=False)
     barcode = Column(String(100), nullable=False, index=True)
     sku = Column(String(100), unique=True, index=True, nullable=True)

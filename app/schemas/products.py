@@ -1,16 +1,16 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from decimal import Decimal
 
 class ProductBase(BaseModel):
     # Product Identification - Required
-    productid: str = Field(
-        ..., 
+    productid: Optional[str] = Field(
+        None, 
         min_length=1, 
         max_length=100,
-        description="Unique product identifier (1-100 characters)",
-        examples=["PROD001", "PRD-2024-001"]
+        description="Unique product identifier (auto-generated if not provided)",
+        examples=["PRD100", "PRD101"]
     )
     productname: str = Field(
         ..., 
@@ -407,6 +407,13 @@ class ProductResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     updated_by: Optional[str] = None
+    
+    @model_validator(mode='after')
+    def format_productid(self):
+        """Format productid as PRD{id} if not already formatted"""
+        if self.productid is None or self.productid == '':
+            self.productid = f"PRD{self.id}"
+        return self
     
     class Config:
         from_attributes = True
