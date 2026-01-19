@@ -11,6 +11,7 @@ from app.models.products import Products
 from app.models.employees import Employee
 from app.schemas.products import ProductBase, ProductResponse, ProductUpdate
 from app.core.dependencies import get_current_employee, require_role
+from app.services.storage_service import storage_service
 
 
 router = APIRouter()
@@ -166,6 +167,83 @@ def add_products(
         
         for idx, product in enumerate(products):
             try:
+                # Debug: Log received product data
+                logging.info(f"Processing product {idx + 1}: {product.productname}")
+                logging.info(f"Product has images: {product.productimages is not None}")
+                if product.productimages:
+                    logging.info(f"Number of images: {len(product.productimages)}")
+                    logging.info(f"First image preview: {product.productimages[0][:100] if product.productimages[0] else 'None'}...")
+                
+                # Validate max 5 images
+                if product.productimages and len(product.productimages) > 5:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "ValidationError",
+                            "message": "Maximum 5 images allowed per product",
+                            "field": "productimages",
+                            "type": "max_limit_exceeded",
+                            "current_count": len(product.productimages),
+                            "max_allowed": 5
+                        }
+                    )
+                
+                # Upload images to GCS if provided
+                uploaded_image_urls = []
+                if product.productimages and len(product.productimages) > 0:
+                    try:
+                        logging.info(f"Processing {len(product.productimages)} images for upload to GCS")
+                        
+                        if storage_service is None:
+                            raise HTTPException(
+                                status_code=500,
+                                detail={
+                                    "error": "StorageServiceError",
+                                    "message": "Google Cloud Storage is not configured. Check server logs for details.",
+                                    "type": "service_unavailable"
+                                }
+                            )
+                        
+                        uploaded_image_urls = storage_service.upload_product_images(
+                            product.productimages,
+                            max_images=5
+                        )
+                        logging.info(f"Successfully uploaded {len(uploaded_image_urls)} images to GCS products folder")
+                        logging.info(f"Image URLs: {uploaded_image_urls}")
+                    except ValueError as ve:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={
+                                "error": "ValidationError",
+                                "message": str(ve),
+                                "field": "productimages",
+                                "type": "max_limit_exceeded"
+                            }
+                        )
+                    except Exception as e:
+                        logging.error(f"Error uploading images to GCS: {str(e)}")
+                        error_message = str(e)
+                        
+                        # Provide more specific error messages based on the error
+                        if "invalid_grant" in error_message.lower() or "jwt" in error_message.lower():
+                            detail_message = "GCS credentials are invalid or expired. Please regenerate service account key from Google Cloud Console."
+                        elif "permission" in error_message.lower() or "403" in error_message:
+                            detail_message = "Permission denied. Service account needs Storage Object Admin role."
+                        elif "not found" in error_message.lower() or "404" in error_message:
+                            detail_message = f"GCS bucket '{os.getenv('GCS_BUCKET_NAME')}' not found. Please check bucket name in .env file."
+                        else:
+                            detail_message = f"Failed to upload images: {error_message}"
+                        
+                        raise HTTPException(
+                            status_code=500,
+                            detail={
+                                "error": "ImageUploadError",
+                                "message": detail_message,
+                                "type": "storage_error",
+                                "raw_error": error_message
+                            }
+                        )
+                
                 # Check if product with same barcode already exists
                 existing_barcode = db.query(Products).filter(Products.barcode == product.barcode).first()
                 if existing_barcode:
@@ -201,7 +279,7 @@ def add_products(
                     description=product.description,
                     brand=product.brand,
                     category=product.category,
-                    productimages=product.productimages,
+                    productimages=uploaded_image_urls if uploaded_image_urls else None,  # Use GCS URLs
                     price=product.price,
                     unitvalue=product.unitvalue,
                     unit=product.unit,
@@ -525,6 +603,97 @@ def update_product(
                         "type": "duplicate_entry"
                     }
                 )
+        
+        # Handle image uploads if productimages are provided
+        if "productimages" in update_dict and update_dict["productimages"]:
+            images = update_dict["productimages"]
+            
+            # Validate max 5 images
+            if len(images) > 5:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "ValidationError",
+                        "message": "Maximum 5 images allowed per product",
+                        "field": "productimages",
+                        "type": "max_limit_exceeded",
+                        "current_count": len(images),
+                        "max_allowed": 5
+                    }
+                )
+            
+            # Check if images are base64 (need upload) or already GCS URLs (skip upload)
+            images_to_upload = []
+            existing_urls = []
+            
+            for img in images:
+                if img and img.startswith("data:image"):
+                    # Base64 image - needs to be uploaded
+                    images_to_upload.append(img)
+                elif img and img.startswith("http"):
+                    # Already a URL - keep as is
+                    existing_urls.append(img)
+            
+            # Upload new base64 images to GCS
+            if images_to_upload:
+                try:
+                    logging.info(f"Processing {len(images_to_upload)} new images for upload to GCS")
+                    
+                    if storage_service is None:
+                        raise HTTPException(
+                            status_code=500,
+                            detail={
+                                "error": "StorageServiceError",
+                                "message": "Google Cloud Storage is not configured. Check server logs for details.",
+                                "type": "service_unavailable"
+                            }
+                        )
+                    
+                    uploaded_urls = storage_service.upload_product_images(
+                        images_to_upload,
+                        max_images=5
+                    )
+                    logging.info(f"Successfully uploaded {len(uploaded_urls)} images to GCS products folder")
+                    
+                    # Combine existing URLs and newly uploaded URLs
+                    update_dict["productimages"] = existing_urls + uploaded_urls
+                    
+                except ValueError as ve:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "ValidationError",
+                            "message": str(ve),
+                            "field": "productimages",
+                            "type": "max_limit_exceeded"
+                        }
+                    )
+                except Exception as e:
+                    logging.error(f"Error uploading images to GCS: {str(e)}")
+                    error_message = str(e)
+                    
+                    # Provide more specific error messages based on the error
+                    if "invalid_grant" in error_message.lower() or "jwt" in error_message.lower():
+                        detail_message = "GCS credentials are invalid or expired. Please regenerate service account key from Google Cloud Console."
+                    elif "permission" in error_message.lower() or "403" in error_message:
+                        detail_message = "Permission denied. Service account needs Storage Object Admin role."
+                    elif "not found" in error_message.lower() or "404" in error_message:
+                        detail_message = f"GCS bucket '{os.getenv('GCS_BUCKET_NAME')}' not found. Please check bucket name in .env file."
+                    else:
+                        detail_message = f"Failed to upload images: {error_message}"
+                    
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error": "ImageUploadError",
+                            "message": detail_message,
+                            "type": "storage_error",
+                            "raw_error": error_message
+                        }
+                    )
+            else:
+                # Only existing URLs, no upload needed
+                update_dict["productimages"] = existing_urls
         
         # Update fields
         for key, value in update_dict.items():

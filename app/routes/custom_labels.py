@@ -26,17 +26,35 @@ def create_custom_label(
     Create a new custom label with predefined values.
     Only owner, admin, or manager can create custom labels.
     """
-    # Check if label already exists for this business and type
-    existing_label = db.query(CustomLabel).filter(
+    # Check if label already exists for this business and type (case-insensitive)
+    existing_labels = db.query(CustomLabel).filter(
         CustomLabel.business_id == current_employee.business_id,
-        CustomLabel.label_name == label_data.label_name,
         CustomLabel.label_type == label_data.label_type
-    ).first()
+    ).all()
     
-    if existing_label:
+    # Case-insensitive name check
+    for existing in existing_labels:
+        if existing.label_name.lower() == label_data.label_name.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="Duplicate label names not allowed. A label with this name already exists (case-insensitive)."
+            )
+    
+    # Check for duplicate values in label_values array (case-insensitive)
+    label_values = label_data.label_values
+    lowercase_values = [v.lower() for v in label_values]
+    if len(lowercase_values) != len(set(lowercase_values)):
+        # Find the duplicate values
+        seen = set()
+        duplicates = set()
+        for value in label_values:
+            value_lower = value.lower()
+            if value_lower in seen:
+                duplicates.add(value)
+            seen.add(value_lower)
         raise HTTPException(
             status_code=400,
-            detail=f"Label '{label_data.label_name}' of type '{label_data.label_type}' already exists for this business"
+            detail=f"Duplicate label values not allowed. Found duplicate value(s): {', '.join(duplicates)} (case-insensitive)"
         )
     
     try:
@@ -130,24 +148,41 @@ def update_custom_label(
         
         # Update label name if provided
         if label_data.label_name:
-            # Check if new name conflicts with existing label
-            existing = db.query(CustomLabel).filter(
+            # Check if new name conflicts with existing label (case-insensitive)
+            existing_labels = db.query(CustomLabel).filter(
                 CustomLabel.business_id == current_employee.business_id,
-                CustomLabel.label_name == label_data.label_name,
                 CustomLabel.label_type == label.label_type,
                 CustomLabel.id != label_id
-            ).first()
+            ).all()
             
-            if existing:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Label '{label_data.label_name}' of type '{label.label_type}' already exists for this business"
-                )
+            for existing in existing_labels:
+                if existing.label_name.lower() == label_data.label_name.lower():
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Duplicate label names not allowed. A label with this name already exists (case-insensitive)."
+                    )
             
             label.label_name = label_data.label_name
         
         # Update values (replace, not merge)
         if label_data.label_values:
+            # Check for duplicate values in label_values array (case-insensitive)
+            label_values = label_data.label_values
+            lowercase_values = [v.lower() for v in label_values]
+            if len(lowercase_values) != len(set(lowercase_values)):
+                # Find the duplicate values
+                seen = set()
+                duplicates = set()
+                for value in label_values:
+                    value_lower = value.lower()
+                    if value_lower in seen:
+                        duplicates.add(value)
+                    seen.add(value_lower)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate label values not allowed. Found duplicate value(s): {', '.join(duplicates)} (case-insensitive)"
+                )
+            
             label.label_values = label_data.label_values
         
         db.commit()
